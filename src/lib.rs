@@ -4,8 +4,15 @@ use ndarray::prelude::*;
 use realfft::num_complex::Complex;
 use realfft::RealFftPlanner;
 
+pub trait Feature {
+    fn frame_options(&self) -> &FrameExtractionOpts;
+    fn compute(&mut self, signal_frame: &mut [Float], feature: &mut [Float]);
+    fn n_coeffs(&self) -> usize;
+}
+
 type Float = f32;
 const PI: Float = std::f32::consts::PI;
+const TWOPI: Float = std::f32::consts::TAU;
 
 mod freq;
 
@@ -23,14 +30,12 @@ struct MelBanksOpts {
     high_freq: freq::Freq,
 }
 
-enum WindowType {
-    Hamming,
-}
-
-struct FrameExtractionOpts {
+#[derive(Clone)]
+pub struct FrameExtractionOpts {
     sample_freq: freq::Freq,
     frame_length_ms: Float,
-    window_type: WindowType,
+    frame_shift_ms: Float,
+    emphasis_factor: Float,
 }
 
 impl FrameExtractionOpts {
@@ -41,6 +46,10 @@ impl FrameExtractionOpts {
 
     fn win_size_padded(&self) -> usize {
         self.win_size().next_power_of_two()
+    }
+
+    fn win_shift(&self) -> usize {
+        Float::from(self.sample_freq * 0.001 * self.frame_shift_ms) as usize
     }
 }
 
@@ -56,8 +65,6 @@ impl MelBanks {
 
         let win_size = frame_opts.win_size().next_power_of_two();
         let n_fft_bins = win_size / 2;
-
-        let nyquist_freq = 0.5 * sample_freq;
 
         let fft_bin_width = sample_freq / win_size as Float;
 
@@ -176,15 +183,11 @@ impl Mfcc {
             &mut output[0..dim]
         }
     }
+}
 
-    pub fn compute(&mut self, frame: &mut [Float]) -> Vec<Float> {
-        let mut ret = vec![0.0; self.options.n_ceps];
-        self.compute_inplace(frame, ret.as_mut_slice());
-        ret
-    }
-
-    pub fn compute_inplace(&mut self, frame: &mut [Float], feature: &mut [Float]) {
-        // TODO: use raw spectral power, before windowing and pre-emphasis
+impl Feature for Mfcc {
+    fn compute(&mut self, frame: &mut [Float], feature: &mut [Float]) {
+        // TODO: use raw spectral power, before windowing and pre-emphasis, as C0
         let mel_banks = &self.mel_banks;
 
         let fft = self
@@ -213,7 +216,15 @@ impl Mfcc {
             &mut ArrayViewMut::from(feature),
         )
 
-        // TODO: Cepstral lifting
+        // TODO: Cepstral liftering
+    }
+
+    fn frame_options(&self) -> &FrameExtractionOpts {
+        &self.options.frame_opts
+    }
+
+    fn n_coeffs(&self) -> usize {
+        self.options.n_ceps
     }
 }
 
@@ -221,4 +232,58 @@ pub struct MfccOptions {
     mel_opts: MelBanksOpts,
     frame_opts: FrameExtractionOpts,
     n_ceps: usize,
+}
+
+pub struct OfflineFeature<T: Feature> {
+    computer: T,
+}
+
+fn hamming_window(len: usize) -> Array1<Float> {
+    let a = TWOPI / (len - 1) as Float;
+    Array1::from_iter((0..len).map(|i| 0.54 - 0.46 * f32::cos(a * i as f32)))
+}
+
+impl<T: Feature> OfflineFeature<T> {
+    fn preemphasize(frame: &mut [Float], opts: &FrameExtractionOpts) {
+        let emph_fact = opts.emphasis_factor;
+        for j in 1..frame.len() {
+            frame[j] -= emph_fact * frame[j - 1];
+        }
+        frame[0] -= emph_fact * frame[0];
+    }
+
+    pub fn compute(&mut self, wave: &[Float]) -> Array2<Float> {
+        let n_samples = wave.len();
+        let opts = self.computer.frame_options().clone();
+        let frame_shift = opts.win_shift();
+        let frame_length_padded = self.computer.frame_options().win_size_padded();
+        let num_frames = n_samples / frame_shift;
+
+        let hamming_window = hamming_window(frame_length_padded);
+        let mut frame = Array1::zeros(frame_length_padded);
+        let mut output = Array2::zeros((num_frames, self.computer.n_coeffs()));
+        for i in 0..num_frames {
+            let frame_start = i * frame_shift;
+            let frame_end = usize::min(frame_start + frame_length_padded, n_samples);
+            let frame_view = ArrayView1::from(&wave[frame_start..frame_end]);
+            frame
+                .slice_mut(s![0..frame_end - frame_start])
+                .assign(&frame_view);
+            // Zero-pad the last frame
+            if frame_start + frame_length_padded > n_samples {
+                frame.slice_mut(s![frame_end - frame_start..]).fill(0.);
+            }
+
+            Self::preemphasize(frame.as_slice_mut().unwrap(), &opts);
+
+            frame *= &hamming_window;
+            let mut feature = output.slice_mut(s![i, ..]);
+
+            self.computer.compute(
+                frame.as_slice_mut().unwrap(),
+                feature.as_slice_mut().unwrap(),
+            )
+        }
+        output
+    }
 }
