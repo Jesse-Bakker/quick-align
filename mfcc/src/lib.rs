@@ -14,7 +14,7 @@ type Float = f32;
 const PI: Float = std::f32::consts::PI;
 const TWOPI: Float = std::f32::consts::TAU;
 
-mod freq;
+pub mod freq;
 
 fn dot(v0: &[Float], v1: &[Float]) -> Float {
     v0.iter().zip(v1.iter()).map(|(e0, e1)| e0 * e1).sum()
@@ -24,18 +24,18 @@ struct MelBanks {
     bins: Vec<(usize, Array1<Float>)>,
 }
 
-struct MelBanksOpts {
-    n_bins: usize,
-    low_freq: freq::Freq,
-    high_freq: freq::Freq,
+pub struct MelBanksOpts {
+    pub n_bins: usize,
+    pub low_freq: Option<freq::Freq>,
+    pub high_freq: Option<freq::Freq>,
 }
 
 #[derive(Clone)]
 pub struct FrameExtractionOpts {
-    sample_freq: freq::Freq,
-    frame_length_ms: Float,
-    frame_shift_ms: Float,
-    emphasis_factor: Float,
+    pub sample_freq: freq::Freq,
+    pub frame_length_ms: Float,
+    pub frame_shift_ms: Float,
+    pub emphasis_factor: Float,
 }
 
 impl FrameExtractionOpts {
@@ -62,14 +62,15 @@ impl MelBanks {
         } = opts;
         let n_bins = *n_bins as usize;
         let sample_freq = frame_opts.sample_freq;
+        let nyquist = 0.5 * sample_freq;
 
         let win_size = frame_opts.win_size().next_power_of_two();
         let n_fft_bins = win_size / 2;
 
         let fft_bin_width = sample_freq / win_size as Float;
 
-        let mel_low_freq: freq::MelFreq = low_freq.to_mel();
-        let mel_high_freq: freq::MelFreq = high_freq.to_mel();
+        let mel_low_freq: freq::MelFreq = low_freq.unwrap_or(0.0.into()).to_mel();
+        let mel_high_freq: freq::MelFreq = high_freq.unwrap_or(nyquist).to_mel();
 
         let mel_freq_delta = (mel_high_freq - mel_low_freq) / (n_bins + 1) as Float;
 
@@ -85,7 +86,7 @@ impl MelBanks {
 
                 let this_bin: Array1<_> = (0..n_fft_bins)
                     .filter_map(|i| {
-                        let freq: freq::Freq = fft_bin_width * i as Float;
+                        let freq: freq::Freq = fft_bin_width * (i as Float);
                         let mel: freq::MelFreq = freq.to_mel();
 
                         if mel < left_mel || mel > right_mel {
@@ -112,7 +113,7 @@ impl MelBanks {
             let offset = bin.0;
             let bin_data = &bin.1;
 
-            let energy = bin_data.dot(&power_spectrum.slice(s![offset..bin_data.len()]));
+            let energy = bin_data.dot(&power_spectrum.slice(s![offset..offset + bin_data.len()]));
             *output = energy
         }
     }
@@ -187,7 +188,7 @@ impl Mfcc {
 
 impl Feature for Mfcc {
     fn compute(&mut self, frame: &mut [Float], feature: &mut [Float]) {
-        // TODO: use raw spectral power, before windowing and pre-emphasis, as C0
+        // XXX: use raw spectral power, before windowing and pre-emphasis, as C0
         let mel_banks = &self.mel_banks;
 
         let fft = self
@@ -205,6 +206,9 @@ impl Feature for Mfcc {
 
         mel_banks.apply_in(power_spectrum.view(), self.mel_energies.view_mut());
         for energy in self.mel_energies.iter_mut() {
+            if *energy == 0.0 {
+                *energy = f32::EPSILON;
+            }
             *energy = energy.ln();
         }
 
@@ -216,7 +220,7 @@ impl Feature for Mfcc {
             &mut ArrayViewMut::from(feature),
         )
 
-        // TODO: Cepstral liftering
+        // XXX: Do cepstral liftering
     }
 
     fn frame_options(&self) -> &FrameExtractionOpts {
@@ -229,9 +233,9 @@ impl Feature for Mfcc {
 }
 
 pub struct MfccOptions {
-    mel_opts: MelBanksOpts,
-    frame_opts: FrameExtractionOpts,
-    n_ceps: usize,
+    pub mel_opts: MelBanksOpts,
+    pub frame_opts: FrameExtractionOpts,
+    pub n_ceps: usize,
 }
 
 pub struct OfflineFeature<T: Feature> {
@@ -244,6 +248,10 @@ fn hamming_window(len: usize) -> Array1<Float> {
 }
 
 impl<T: Feature> OfflineFeature<T> {
+    pub fn new(computer: T) -> Self {
+        Self { computer }
+    }
+
     fn preemphasize(frame: &mut [Float], opts: &FrameExtractionOpts) {
         let emph_fact = opts.emphasis_factor;
         for j in 1..frame.len() {

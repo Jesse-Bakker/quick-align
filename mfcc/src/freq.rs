@@ -77,7 +77,7 @@ macro_rules! impl_float_ops {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, PartialOrd)]
-pub(crate) struct Freq(Float);
+pub struct Freq(Float);
 
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, PartialOrd)]
