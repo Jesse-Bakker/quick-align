@@ -6,7 +6,7 @@ use realfft::RealFftPlanner;
 
 pub trait Feature {
     fn frame_options(&self) -> &FrameExtractionOpts;
-    fn compute(&mut self, signal_frame: &mut [Float], feature: &mut [Float]);
+    fn compute(&mut self, signal_frame: ArrayViewMut1<Float>, feature: ArrayViewMut1<Float>);
     fn n_coeffs(&self) -> usize;
 }
 
@@ -187,7 +187,7 @@ impl Mfcc {
 }
 
 impl Feature for Mfcc {
-    fn compute(&mut self, frame: &mut [Float], feature: &mut [Float]) {
+    fn compute(&mut self, mut frame: ArrayViewMut1<Float>, mut feature: ArrayViewMut1<Float>) {
         // XXX: use raw spectral power, before windowing and pre-emphasis, as C0
         let mel_banks = &self.mel_banks;
 
@@ -195,7 +195,7 @@ impl Feature for Mfcc {
             .fft_planner
             .plan_fft_forward(self.options.frame_opts.win_size_padded());
         fft.process_with_scratch(
-            frame,
+            frame.as_slice_mut().unwrap(),
             self.fft_out.as_mut_slice(),
             self.fft_scratch.as_mut_slice(),
         )
@@ -217,7 +217,7 @@ impl Feature for Mfcc {
             &self.dct_matrix,
             &self.mel_energies,
             0.0,
-            &mut ArrayViewMut::from(feature),
+            &mut feature,
         )
 
         // XXX: Do cepstral liftering
@@ -269,7 +269,7 @@ impl<T: Feature> OfflineFeature<T> {
 
         let hamming_window = hamming_window(frame_length_padded);
         let mut frame = Array1::zeros(frame_length_padded);
-        let mut output = Array2::zeros((num_frames, self.computer.n_coeffs()));
+        let mut output = Array2::zeros((self.computer.n_coeffs(), num_frames));
         for i in 0..num_frames {
             let frame_start = i * frame_shift;
             let frame_end = usize::min(frame_start + frame_length_padded, n_samples);
@@ -285,11 +285,11 @@ impl<T: Feature> OfflineFeature<T> {
             Self::preemphasize(frame.as_slice_mut().unwrap(), &opts);
 
             frame *= &hamming_window;
-            let mut feature = output.slice_mut(s![i, ..]);
+            let feature = output.column_mut(i);
 
             self.computer.compute(
-                frame.as_slice_mut().unwrap(),
-                feature.as_slice_mut().unwrap(),
+                frame.view_mut(),
+                feature,
             )
         }
         output

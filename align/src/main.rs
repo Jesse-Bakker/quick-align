@@ -1,7 +1,7 @@
-use csv::Writer;
-use ndarray_csv::Array2Writer;
+use clap::Parser;
+use ndarray::prelude::*;
 
-use std::path::Path;
+use std::{io::Read, path::Path};
 
 use symphonia::{
     core::{
@@ -18,6 +18,12 @@ use symphonia::{
 };
 
 use mfcc::{freq::Freq, FrameExtractionOpts, MelBanksOpts, Mfcc, MfccOptions, OfflineFeature};
+
+const MFCC_WINDOW_SHIFT: f32 = 20.;
+const MFCC_WINDOW_LENGTH: f32 = 50.;
+
+mod dtw;
+mod tts;
 
 struct SampleIterator<'a> {
     format_reader: &'a mut dyn FormatReader,
@@ -79,17 +85,16 @@ impl Iterator for SampleIterator<'_> {
     }
 }
 
-fn main() {
+fn read_audio_samples<P>(path: P) -> (u32, Vec<f32>)
+where
+    P: AsRef<Path>,
+{
     let codecs = get_codecs();
     let probe = get_probe();
-
-    let args = std::env::args().collect::<Vec<_>>();
-    let filename = &args[1];
-    let path = Path::new(filename);
-    let file = std::fs::File::open(filename).expect("Could not open file");
+    let file = std::fs::File::open(path.as_ref()).expect("Could not open file");
     let stream = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
     let mut format_hint = Hint::new();
-    if let Some(extension) = path.extension() {
+    if let Some(extension) = path.as_ref().extension() {
         format_hint.with_extension(extension.to_str().unwrap());
     }
 
@@ -107,25 +112,120 @@ fn main() {
         .unwrap();
 
     let iterator = SampleIterator::new(&mut *format, &mut *decoder);
-    let wave: Vec<_> = iterator.collect();
-    println!("Collected {} samples", wave.len());
+    (track.codec_params.sample_rate.unwrap(), iterator.collect())
+}
+
+fn compute_mfcc(wave: Vec<f32>, sample_freq: u32) -> Array2<f32> {
     let mut computer = OfflineFeature::new(Mfcc::new(MfccOptions {
         mel_opts: MelBanksOpts {
             n_bins: 40,
-            low_freq: None,
-            high_freq: None,
+            low_freq: Some(133.3333.into()),
+            high_freq: Some(6855.4976.into()),
         },
         frame_opts: FrameExtractionOpts {
-            sample_freq: Freq::from(16_000.),
-            frame_length_ms: 20.,
-            frame_shift_ms: 5.,
+            sample_freq: Freq::from(sample_freq as f32),
+            frame_length_ms: MFCC_WINDOW_LENGTH,
+            frame_shift_ms: MFCC_WINDOW_SHIFT,
             emphasis_factor: 0.97,
         },
         n_ceps: 13,
     }));
-    let mfcc = computer.compute(wave.as_slice());
-    {
-        let mut writer = Writer::from_path("out.csv").unwrap();
-        writer.serialize_array2(&mfcc).unwrap();
+    computer.compute(wave.as_slice())
+}
+
+#[derive(Parser, Debug)]
+struct Args {
+    #[clap(value_parser)]
+    audio_file: String,
+
+    #[clap(value_parser)]
+    text_file: String,
+}
+
+fn extract_fragments<P>(path: P) -> Vec<String>
+where
+    P: AsRef<Path>,
+{
+    let mut file = std::fs::File::open(path.as_ref()).expect("Could not open file");
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+
+    contents.lines().map(|s| s.to_owned()).collect()
+}
+
+fn search_sorted_right(a: Vec<usize>, v: impl ExactSizeIterator<Item = usize>) -> Vec<usize> {
+    let mut ret = Vec::with_capacity(v.len());
+    let mut i = 0;
+    for val in v {
+        while i < a.len() {
+            if (i == 0 || a[i - 1] <= val) && val < a[i] {
+                ret.push(i + 1);
+                break;
+            }
+            i += 1;
+        }
+    }
+    ret
+}
+
+fn find_boundaries(
+    real_indices: Vec<usize>,
+    synth_indices: Vec<usize>,
+    anchors: Vec<usize>,
+) -> Vec<usize> {
+    // These are the indices of the anchors corresponding to the indices in the synth_indices array
+    let anchor_indices = anchors
+        .into_iter()
+        .map(|anchor| /* time in ms */ anchor / MFCC_WINDOW_SHIFT as usize);
+    // Now, find where we should insert these anchors into our synthetic indices array, to find
+    // where they would occur in real_indices, thus where they would occur in our real audio
+    let begin_indices = search_sorted_right(synth_indices, anchor_indices);
+    begin_indices.into_iter().map(|i| real_indices[i]).collect()
+}
+
+fn main() {
+    let args = Args::parse();
+    let audio_file = args.audio_file;
+    let text_file = args.text_file;
+    let (real_sample_rate, real_samples) = read_audio_samples(audio_file);
+    let real_mfcc = compute_mfcc(real_samples, real_sample_rate);
+
+    let fragments = extract_fragments(text_file);
+    let synth_samples =
+        tts::speak_multiple(fragments.iter().map(|s| s.as_str()).collect()).unwrap();
+    let float_samples = synth_samples
+        .wav
+        .into_iter()
+        .map(|sample| sample as f32 / u16::MAX as f32)
+        .collect();
+
+    let mut anchors = synth_samples.anchors;
+    // The first fragment starts at 0, so this converts from end-timings to begin-timings
+    anchors.insert(0, 0);
+
+    let synth_mfcc = compute_mfcc(float_samples, synth_samples.sample_rate as u32);
+
+    let path = dtw::path(&real_mfcc, &synth_mfcc);
+    let (real_indices, synth_indices): (Vec<_>, Vec<_>) = path.into_iter().unzip();
+    let boundaries = find_boundaries(real_indices, synth_indices, anchors);
+    let time_boundaries = boundaries
+        .into_iter()
+        .map(|index| index as f32 * MFCC_WINDOW_SHIFT / 1000.0)
+        .collect::<Vec<_>>();
+    dbg!(time_boundaries);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_search_sorted() {
+        let a = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let v = vec![0, 2, 5, 6, 8, 8];
+        assert_eq!(
+            search_sorted_right(a, v.into_iter()),
+            vec![1, 3, 6, 7, 9, 9]
+        );
     }
 }
