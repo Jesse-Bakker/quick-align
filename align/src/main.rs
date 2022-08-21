@@ -19,8 +19,8 @@ use symphonia::{
 
 use mfcc::{freq::Freq, FrameExtractionOpts, MelBanksOpts, Mfcc, MfccOptions, OfflineFeature};
 
-const MFCC_WINDOW_SHIFT: f32 = 20.;
-const MFCC_WINDOW_LENGTH: f32 = 50.;
+const MFCC_WINDOW_SHIFT: f32 = 40.;
+const MFCC_WINDOW_LENGTH: f32 = 100.;
 
 mod dtw;
 mod tts;

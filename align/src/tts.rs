@@ -187,15 +187,3 @@ impl<T> PoisonlessLock<T> for Mutex<T> {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_tts() {
-        let fragments = vec!["Hello, world", "How are you?"];
-        let result = speak_multiple(fragments);
-        panic!("{:?}", result);
-    }
-}
