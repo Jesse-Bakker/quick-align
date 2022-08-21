@@ -76,11 +76,11 @@ macro_rules! impl_float_ops {
 }
 
 #[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
 pub struct Freq(Float);
 
 #[repr(transparent)]
-#[derive(Copy, Clone, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
 pub(crate) struct MelFreq(Float);
 
 pub(crate) trait AsFloatSlice {
@@ -99,6 +99,6 @@ impl Freq {
 
 impl MelFreq {
     pub(crate) fn to_freq(self) -> Freq {
-        Freq(700.0 * ((self.0 / 1127.0) - 1.0).exp())
+        Freq(700.0 * ((self.0 / 1127.0).exp() - 1.0))
     }
 }
