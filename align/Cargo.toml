@@ -8,9 +8,7 @@ edition = "2021"
 [dependencies]
 mfcc = {version="0.1.0", path="../mfcc"}
 once_cell = "1.13.0"
-ndarray-csv = "0.5.1"
 ndarray= {version ="0.15.4", features = ["approx"]}
-csv = "1.1.6"
 espeakng-sys = "0.1.1"
 lazy_static = "1.4.0"
 clap = {version="3.2.17", features = ["derive"]}

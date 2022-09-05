@@ -7,7 +7,7 @@ mod audioreader;
 
 use mfcc::{freq::Freq, FrameExtractionOpts, MelBanksOpts, Mfcc, MfccOptions, OfflineFeature};
 
-use crate::audioreader::read_and_transcode_file;
+use crate::audioreader::AudioReader;
 
 const MFCC_WINDOW_SHIFT: f32 = 40.;
 const MFCC_WINDOW_LENGTH: f32 = 100.;
@@ -87,7 +87,8 @@ fn main() {
     let args = Args::parse();
     let audio_file = args.audio_file;
     let text_file = args.text_file;
-    let audio_samples = read_and_transcode_file(&audio_file, 22050).unwrap();
+    let reader = AudioReader::new();
+    let audio_samples = reader.read_and_transcode_file(&audio_file, 22050).unwrap();
     let real_mfcc = compute_mfcc(audio_samples, 22050);
 
     let fragments = extract_fragments(text_file);
