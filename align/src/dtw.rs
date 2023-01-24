@@ -2,76 +2,106 @@ use std::cmp::Ordering;
 
 use ndarray::prelude::*;
 
-pub(crate) fn path(mfcc1: &Array2<f32>, mfcc2: &Array2<f32>) -> Vec<(usize, usize)> {
-    let mut cost_matrix = cost_matrix(&mfcc1.view(), &mfcc2.view());
-    accumulated_cost_matrix(&mut cost_matrix);
-    best_path(&cost_matrix)
+use crate::dtw_striped::DTWStriped;
+
+pub(crate) enum DtwAlgorithm {
+    Exact(DTWExact),
+    Striped(DTWStriped),
 }
 
-pub(crate) fn cost_matrix(mfcc1: &ArrayView2<f32>, mfcc2: &ArrayView2<f32>) -> Array2<f32> {
-    // Discard the first component
-    let mfcc1 = mfcc1.slice(s![1.., ..]);
-    let mfcc2 = mfcc2.slice(s![1.., ..]);
-
-    let normsq_1 = (&mfcc1 * &mfcc1).sum_axis(Axis(0)).map(|elem| elem.sqrt());
-    let normsq_2 = (&mfcc2 * &mfcc2).sum_axis(Axis(0)).map(|elem| elem.sqrt());
-
-    let cost_matrix = &mfcc1.t().dot(&mfcc2);
-    let norm_matrix = &normsq_1.to_shape((normsq_1.len(), 1)).unwrap()
-        * &normsq_2.to_shape((1, normsq_2.len())).unwrap();
-    return arr0(1.0).broadcast(cost_matrix.dim()).unwrap().to_owned()
-        - (cost_matrix / norm_matrix);
-}
-
-pub(crate) fn accumulated_cost_matrix(cost_matrix: &mut Array2<f32>) {
-    let (n, m) = cost_matrix.dim();
-    for j in 1..m {
-        cost_matrix[(0, j)] += cost_matrix[(0, j - 1)];
+impl Dtw for DtwAlgorithm {
+    fn path(&self, mfcc1: &Array2<f32>, mfcc2: &Array2<f32>) -> Vec<(usize, usize)> {
+        match self {
+            DtwAlgorithm::Exact(dtw) => dtw.path(mfcc1, mfcc2),
+            DtwAlgorithm::Striped(dtw) => dtw.path(mfcc1, mfcc2),
+        }
     }
+}
 
-    for i in 1..n {
-        cost_matrix[(i, 0)] += cost_matrix[(i - 1, 0)];
+pub(crate) trait Dtw {
+    fn path(&self, mfcc1: &Array2<f32>, mfcc2: &Array2<f32>) -> Vec<(usize, usize)>;
+}
+
+pub(crate) struct DTWExact;
+
+impl DTWExact {
+    pub(crate) fn best_path(
+        &self,
+        accumulated_cost_matrix: &Array2<f32>,
+    ) -> std::vec::Vec<(usize, usize)> {
+        let (n, m) = accumulated_cost_matrix.dim();
+        let mut i = n - 1;
+        let mut j = m - 1;
+        let mut path = vec![(i, j)];
+
+        while (i > 0) || (j > 0) {
+            if i == 0 {
+                path.push((0, j - 1));
+                j -= 1;
+            } else if j == 0 {
+                path.push((i - 1, 0));
+                i -= 1;
+            } else {
+                let moves = [(i - 1, j), (i, j - 1), (i - 1, j - 1)];
+                let move_ = moves
+                    .iter()
+                    .min_by(|first, second| {
+                        let first = accumulated_cost_matrix[**first];
+                        let second = accumulated_cost_matrix[**second];
+                        if first > second {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        }
+                    })
+                    .unwrap();
+                path.push(*move_);
+                (i, j) = *move_;
+            }
+        }
+        path.reverse();
+        path
+    }
+    pub(crate) fn accumulated_cost_matrix(&self, cost_matrix: &mut Array2<f32>) {
+        let (n, m) = cost_matrix.dim();
         for j in 1..m {
-            cost_matrix[(i, j)] += cost_matrix[(i - 1, j)]
-                .min(cost_matrix[(i, j - 1)])
-                .min(cost_matrix[(i - 1, j - 1)]);
+            cost_matrix[(0, j)] += cost_matrix[(0, j - 1)];
         }
+
+        for i in 1..n {
+            cost_matrix[(i, 0)] += cost_matrix[(i - 1, 0)];
+            for j in 1..m {
+                cost_matrix[(i, j)] += cost_matrix[(i - 1, j)]
+                    .min(cost_matrix[(i, j - 1)])
+                    .min(cost_matrix[(i - 1, j - 1)]);
+            }
+        }
+    }
+    pub(crate) fn cost_matrix(
+        &self,
+        mfcc1: &ArrayView2<f32>,
+        mfcc2: &ArrayView2<f32>,
+    ) -> Array2<f32> {
+        // Discard the first component
+        let mfcc1 = mfcc1.slice(s![1.., ..]);
+        let mfcc2 = mfcc2.slice(s![1.., ..]);
+
+        let normsq_1 = (&mfcc1 * &mfcc1).sum_axis(Axis(0)).map(|elem| elem.sqrt());
+        let normsq_2 = (&mfcc2 * &mfcc2).sum_axis(Axis(0)).map(|elem| elem.sqrt());
+
+        let cost_matrix = &mfcc1.t().dot(&mfcc2);
+        let norm_matrix = &normsq_1.to_shape((normsq_1.len(), 1)).unwrap()
+            * &normsq_2.to_shape((1, normsq_2.len())).unwrap();
+        1. - (cost_matrix / norm_matrix)
     }
 }
 
-pub(crate) fn best_path(accumulated_cost_matrix: &Array2<f32>) -> std::vec::Vec<(usize, usize)> {
-    let (n, m) = accumulated_cost_matrix.dim();
-    let mut i = n - 1;
-    let mut j = m - 1;
-    let mut path = vec![(i, j)];
-
-    while (i > 0) || (j > 0) {
-        if i == 0 {
-            path.push((0, j - 1));
-            j -= 1;
-        } else if j == 0 {
-            path.push((i - 1, 0));
-            i -= 1;
-        } else {
-            let moves = [(i - 1, j), (i, j - 1), (i - 1, j - 1)];
-            let move_ = moves
-                .iter()
-                .min_by(|first, second| {
-                    let first = accumulated_cost_matrix[**first];
-                    let second = accumulated_cost_matrix[**second];
-                    if first > second {
-                        Ordering::Greater
-                    } else {
-                        Ordering::Less
-                    }
-                })
-                .unwrap();
-            path.push(*move_);
-            (i, j) = *move_;
-        }
+impl Dtw for DTWExact {
+    fn path(&self, mfcc1: &Array2<f32>, mfcc2: &Array2<f32>) -> Vec<(usize, usize)> {
+        let mut cost_matrix = self.cost_matrix(&mfcc1.view(), &mfcc2.view());
+        self.accumulated_cost_matrix(&mut cost_matrix);
+        self.best_path(&cost_matrix)
     }
-    path.reverse();
-    path
 }
 
 #[cfg(test)]
@@ -80,20 +110,20 @@ mod tests {
 
     #[test]
     fn test_dtw() {
+        let dtw = DTWExact;
         let arr = arr2(&[[1., 2., 3., 4.]; 4]);
         let arr = arr.view();
         // A cost matrix between two identical matrices should be zero
-        let mut cost_matrix = cost_matrix(&arr, &arr);
+        let mut cost_matrix = dtw.cost_matrix(&arr, &arr);
         assert!(cost_matrix.abs_diff_eq(&Array2::zeros(cost_matrix.dim()), 1e-6));
 
-        accumulated_cost_matrix(&mut cost_matrix);
+        dtw.accumulated_cost_matrix(&mut cost_matrix);
         assert!(cost_matrix.abs_diff_eq(&Array2::zeros(cost_matrix.dim()), 1e-6));
-
-        panic!("{:?}", best_path(&cost_matrix))
     }
 
     #[test]
     fn test_acm() {
+        let dtw = DTWExact;
         let arr = [
             [0., 1., 2., 3., 4.],
             [5., 6., 7., 8., 9.],
@@ -101,7 +131,7 @@ mod tests {
             [15., 16., 17., 18., 19.],
         ];
         let mut cm = arr2(&arr);
-        accumulated_cost_matrix(&mut cm);
+        dtw.accumulated_cost_matrix(&mut cm);
         assert_eq!(
             cm,
             arr2(&[
@@ -115,6 +145,7 @@ mod tests {
 
     #[test]
     fn test_cm() {
+        let dtw = DTWExact;
         let a = arr2(&[
             [0.43123915, 0.14245438, 0.05888148, 0.9096692, 0.54578147],
             [0.36400301, 0.24935615, 0.88831442, 0.63916911, 0.16509406],
@@ -141,7 +172,7 @@ mod tests {
             ],
         ]);
 
-        assert!(cost_matrix(&a.view(), &b.view()).abs_diff_eq(
+        assert!(dtw.cost_matrix(&a.view(), &b.view()).abs_diff_eq(
             &arr2(&[
                 [
                     0.47545551, 0.37896973, 0.42917976, 0.0756509, 0.04015874, 0.08138541,
@@ -170,6 +201,7 @@ mod tests {
 
     #[test]
     fn test_path() {
+        let dtw = DTWExact;
         let acm = arr2(&[
             [0.43123915, 0.14245438, 0.05888148, 0.9096692, 0.54578147],
             [0.36400301, 0.24935615, 0.88831442, 0.63916911, 0.16509406],
@@ -178,7 +210,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            best_path(&acm),
+            dtw.best_path(&acm),
             vec![
                 (0, 0),
                 (0, 1),
