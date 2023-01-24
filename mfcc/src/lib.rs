@@ -16,9 +16,6 @@ const TWOPI: Float = std::f32::consts::TAU;
 
 pub mod freq;
 
-fn dot(v0: &[Float], v1: &[Float]) -> Float {
-    v0.iter().zip(v1.iter()).map(|(e0, e1)| e0 * e1).sum()
-}
 struct MelBanks {
     center_freqs: Vec<freq::Freq>,
     bins: Vec<(usize, Array1<Float>)>,
