@@ -62,12 +62,14 @@ impl DTWStriped {
                 }
             };
 
+            let tmp = mfcc1
+                .slice(s![.., i])
+                .t()
+                .dot(&mfcc2.slice(s![.., range_start..range_end]));
+            cost_matrix.slice_mut(s![i, ..]).assign(
+                &(1. - (tmp / (normsq_1[i] * &normsq_2.slice(s![range_start..range_end])))),
+            );
             centers[i] = range_start;
-            for j in range_start..range_end {
-                let mut tmp = mfcc1.slice(s![.., i]).t().dot(&mfcc2.slice(s![.., j]));
-                tmp /= normsq_1[i] * normsq_2[j];
-                cost_matrix[(i, j - range_start)] = 1. - tmp;
-            }
         }
         (cost_matrix, centers)
     }
@@ -144,7 +146,7 @@ impl DTWStriped {
         );
 
         let (mut i, mut j) = end;
-        j -= centers[i];
+        j += centers[i];
         let mut path = vec![(i, j)];
 
         while i > 0 || j > 0 {
@@ -186,8 +188,7 @@ impl DTWStriped {
                     .unwrap();
                 // If the cost of the previous move is larger than the cost of skipping to here,
                 // we skip to here
-                if min_move.1 > self.skip_penalty * (i * j) as f32 {
-                }
+                if min_move.1 > self.skip_penalty * (i * j) as f32 {}
                 path.push(min_move.0);
                 (i, j) = min_move.0;
             }
@@ -198,15 +199,23 @@ impl DTWStriped {
     }
 }
 
+macro_rules! time {
+    ($s:expr, $m:expr) => {{
+        let instant = std::time::Instant::now();
+        let result = $s;
+        eprintln!("{}: {}", $m, instant.elapsed().as_millis());
+        result
+    }};
+}
 impl Dtw for DTWStriped {
     fn path(
         &self,
         mfcc1: &ndarray::Array2<f32>,
         mfcc2: &ndarray::Array2<f32>,
     ) -> Vec<(usize, usize)> {
-        let (mut cost_matrix, centers) = self.cost_matrix(&mfcc1.view(), &mfcc2.view());
-        let end = self.accumulated_cost_matrix(&mut cost_matrix, &centers);
-        self.best_path(&cost_matrix, &centers, end)
+        let (mut cost_matrix, centers) = time!(self.cost_matrix(&mfcc1.view(), &mfcc2.view()), "Cost matrix");
+        let end = time!(self.accumulated_cost_matrix(&mut cost_matrix, &centers), "Acc cost matrix");
+        time!(self.best_path(&cost_matrix, &centers, end), "Best path")
     }
 }
 
