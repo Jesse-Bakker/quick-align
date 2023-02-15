@@ -124,6 +124,27 @@ pub(crate) fn speak_multiple(utterances: Vec<&str>) -> Result<Spoken, ()> {
     })
 }
 
+struct EventIter {
+    ptr: *mut espeak_EVENT,
+}
+
+impl Iterator for EventIter {
+    type Item = espeak_EVENT;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        unsafe {
+            match (*self.ptr).type_ {
+                espeak_EVENT_TYPE_espeakEVENT_LIST_TERMINATED => None,
+                _ => {
+                    let ret = *self.ptr;
+                    self.ptr = self.ptr.add(1);
+                    Some(ret)
+                }
+            }
+        }
+    }
+}
+
 /// int SynthCallback(short *wav, int numsamples, espeak_EVENT *events);
 ///
 /// wav:  is the speech sound data which has been produced.
@@ -140,34 +161,32 @@ pub(crate) fn speak_multiple(utterances: Vec<&str>) -> Result<Spoken, ()> {
 /// Callback returns: 0=continue synthesis,  1=abort synthesis.
 unsafe extern "C" fn synth_callback(
     wav: *mut c_short,
-    sample_count: c_int,
+    numsamples: c_int,
     events: *mut espeak_EVENT,
 ) -> c_int {
     let mut state = STATE.plock();
-    // Calculate the length of the events array
-    let mut events = events;
 
     // Turn the audio wav data array into a Vec.
     // We must clone from the slice, as the provided array's memory is managed by C
-    let wav_slice = std::slice::from_raw_parts_mut(wav, sample_count as usize);
+    let wav_slice = std::slice::from_raw_parts_mut(wav, numsamples as usize);
     let mut wav_vec = wav_slice
         .iter_mut()
         .map(|f| *f as i16)
         .collect::<Vec<i16>>();
 
-    while (*events).type_ != espeak_EVENT_TYPE_espeakEVENT_LIST_TERMINATED {
-        // Determine if this is the end of the synth
-        let event = *events;
+    let event_iter = EventIter { ptr: events };
+    for event in event_iter {
         match event.type_ {
+            // End of event
             espeak_EVENT_TYPE_espeakEVENT_END => state.last_event_time = event.audio_position,
 
+            // End of message
             espeak_EVENT_TYPE_espeakEVENT_MSG_TERMINATED => {
                 let time = state.anchors.last().unwrap_or(&0) + state.last_event_time as usize;
                 state.anchors.push(time);
             }
             _ => {}
         }
-        events = events.add(1);
     }
 
     state.buffer.append(&mut wav_vec);
