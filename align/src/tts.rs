@@ -166,14 +166,6 @@ unsafe extern "C" fn synth_callback(
 ) -> c_int {
     let mut state = STATE.plock();
 
-    // Turn the audio wav data array into a Vec.
-    // We must clone from the slice, as the provided array's memory is managed by C
-    let wav_slice = std::slice::from_raw_parts_mut(wav, numsamples as usize);
-    let mut wav_vec = wav_slice
-        .iter_mut()
-        .map(|f| *f as i16)
-        .collect::<Vec<i16>>();
-
     let event_iter = EventIter { ptr: events };
     for event in event_iter {
         match event.type_ {
@@ -188,8 +180,11 @@ unsafe extern "C" fn synth_callback(
             _ => {}
         }
     }
+    // Turn the audio wav data array into a Vec.
+    // We must clone from the slice, as the provided array's memory is managed by C
+    let wav_slice = std::slice::from_raw_parts_mut(wav, numsamples as usize);
 
-    state.buffer.append(&mut wav_vec);
+    state.buffer.extend_from_slice(wav_slice);
 
     0
 }
