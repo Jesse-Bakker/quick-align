@@ -61,6 +61,7 @@ pub(crate) fn speak_multiple(utterances: Vec<&str>) -> Result<Spoken, ()> {
     if sample_rate == espeak_ERROR_EE_INTERNAL_ERROR {
         return Err(());
     }
+    assert!(sample_rate == 22050);
 
     let language = CString::new("en").unwrap();
     let mut voice_properties = espeak_VOICE {
