@@ -1,4 +1,5 @@
 use core::slice;
+use freq::Freq;
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::prelude::*;
 use realfft::num_complex::Complex;
@@ -17,7 +18,7 @@ const TWOPI: Float = std::f32::consts::TAU;
 pub mod freq;
 
 struct MelBanks {
-    center_freqs: Vec<freq::Freq>,
+    _center_freqs: Vec<freq::Freq>,
     bins: Vec<(usize, Array1<Float>)>,
 }
 
@@ -27,26 +28,26 @@ pub struct MelBanksOpts {
     pub high_freq: Option<freq::Freq>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct FrameExtractionOpts {
-    pub sample_freq: freq::Freq,
+    pub sample_freq: u32,
     pub frame_length_ms: Float,
     pub frame_shift_ms: Float,
     pub emphasis_factor: Float,
 }
 
 impl FrameExtractionOpts {
-    fn win_size(&self) -> usize {
-        let freq: Float = (self.sample_freq * 0.001 * self.frame_length_ms).into();
+    pub fn win_size(&self) -> usize {
+        let freq: Float = self.sample_freq as Float * 0.001 * self.frame_length_ms;
         freq as usize
     }
 
-    fn win_size_padded(&self) -> usize {
+    pub fn win_size_padded(&self) -> usize {
         self.win_size().next_power_of_two()
     }
 
-    fn win_shift(&self) -> usize {
-        Float::from(self.sample_freq * 0.001 * self.frame_shift_ms) as usize
+    pub fn win_shift(&self) -> usize {
+        (self.sample_freq as Float * 0.001 * self.frame_shift_ms) as usize
     }
 }
 
@@ -57,8 +58,8 @@ impl MelBanks {
             low_freq,
             high_freq,
         } = opts;
-        let n_bins = *n_bins as usize;
-        let sample_freq = frame_opts.sample_freq;
+        let n_bins = *n_bins;
+        let sample_freq = Freq::from(frame_opts.sample_freq as f32);
         let nyquist = 0.5 * sample_freq;
 
         let win_size = frame_opts.win_size().next_power_of_two();
@@ -102,7 +103,7 @@ impl MelBanks {
                 (center_freq, (first_index.unwrap(), this_bin))
             })
             .unzip();
-        Self { bins, center_freqs }
+        Self { bins, _center_freqs: center_freqs }
     }
 
     fn apply_in(&self, power_spectrum: ArrayView1<Float>, mel_energies: ArrayViewMut1<Float>) {
@@ -209,13 +210,7 @@ impl Feature for Mfcc {
             *energy = energy.ln();
         }
 
-        general_mat_vec_mul(
-            1.0,
-            &self.dct_matrix,
-            &self.mel_energies,
-            0.0,
-            &mut feature,
-        )
+        general_mat_vec_mul(1.0, &self.dct_matrix, &self.mel_energies, 0.0, &mut feature)
 
         // XXX: Do cepstral liftering
     }
@@ -235,8 +230,8 @@ pub struct MfccOptions {
     pub n_ceps: usize,
 }
 
-pub struct OfflineFeature<T: Feature> {
-    computer: T,
+pub struct MfccComputer {
+    feature: Mfcc,
 }
 
 fn hamming_window(len: usize) -> Array1<Float> {
@@ -244,9 +239,14 @@ fn hamming_window(len: usize) -> Array1<Float> {
     Array1::from_iter((0..len).map(|i| 0.54 - 0.46 * f32::cos(a * i as f32)))
 }
 
-impl<T: Feature> OfflineFeature<T> {
-    pub fn new(computer: T) -> Self {
-        Self { computer }
+pub trait FrameSupplier {
+    fn n_samples_est(&self) -> usize;
+    fn fill_next(&mut self, output: &mut [Float]) -> usize;
+}
+
+impl MfccComputer {
+    pub fn new(feature: Mfcc) -> Self {
+        Self { feature }
     }
 
     fn preemphasize(frame: &mut [Float], opts: &FrameExtractionOpts) {
@@ -257,38 +257,39 @@ impl<T: Feature> OfflineFeature<T> {
         frame[0] -= emph_fact * frame[0];
     }
 
-    pub fn compute(&mut self, wave: &[Float]) -> Array2<Float> {
-        let n_samples = wave.len();
-        let opts = self.computer.frame_options().clone();
+    pub fn compute(&mut self, mut wave: impl FrameSupplier) -> Array2<Float> {
+        let n_samples = wave.n_samples_est();
+        let opts = *self.feature.frame_options();
         let frame_shift = opts.win_shift();
-        let frame_length_padded = self.computer.frame_options().win_size_padded();
-        let num_frames = n_samples / frame_shift;
+        let frame_length_padded = self.feature.frame_options().win_size_padded();
+        let num_frames = n_samples / frame_shift + 1;
 
         let hamming_window = hamming_window(frame_length_padded);
         let mut frame = Array1::zeros(frame_length_padded);
-        let mut output = Array2::zeros((self.computer.n_coeffs(), num_frames));
-        for i in 0..num_frames {
-            let frame_start = i * frame_shift;
-            let frame_end = usize::min(frame_start + frame_length_padded, n_samples);
-            let frame_view = ArrayView1::from(&wave[frame_start..frame_end]);
-            frame
-                .slice_mut(s![0..frame_end - frame_start])
-                .assign(&frame_view);
-            // Zero-pad the last frame
-            if frame_start + frame_length_padded > n_samples {
-                frame.slice_mut(s![frame_end - frame_start..]).fill(0.);
-            }
+        let mut output = Array2::zeros((num_frames, self.feature.n_coeffs()));
 
+        let mut i = 0;
+        let mut keep_going = true;
+        while keep_going {
+            let n = wave.fill_next(frame.as_slice_mut().unwrap());
+
+            if n < frame_length_padded {
+                frame.slice_mut(s![n..]).fill(0.);
+                keep_going = false;
+            }
             Self::preemphasize(frame.as_slice_mut().unwrap(), &opts);
 
             frame *= &hamming_window;
-            let feature = output.column_mut(i);
 
-            self.computer.compute(
-                frame.view_mut(),
-                feature,
-            )
-        }
+            if i == output.nrows() {
+                output
+                    .push_row(Array1::zeros(self.feature.n_coeffs()).view())
+                    .unwrap();
+            }
+            let feature = output.row_mut(i);
+            self.feature.compute(frame.view_mut(), feature);
+            i += 1;
+        };
         output
     }
 }

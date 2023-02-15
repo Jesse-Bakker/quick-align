@@ -32,8 +32,10 @@ impl DTWStriped {
         mfcc1: &ArrayView2<f32>,
         mfcc2: &ArrayView2<f32>,
     ) -> (Array2<f32>, Array1<usize>) {
-        let mfcc1 = mfcc1.slice(s![1.., ..]);
-        let mfcc2 = mfcc2.slice(s![1.., ..]);
+        let mfcc1 = mfcc1.slice(s![.., 1..]);
+        let mfcc2 = mfcc2.slice(s![.., 1..]);
+        let mfcc1 = mfcc1.t();
+        let mfcc2 = mfcc2.t();
 
         let normsq_1 = (&mfcc1 * &mfcc1).sum_axis(Axis(0)).map(|elem| elem.sqrt());
         let normsq_2 = (&mfcc2 * &mfcc2).sum_axis(Axis(0)).map(|elem| elem.sqrt());
@@ -213,8 +215,14 @@ impl Dtw for DTWStriped {
         mfcc1: &ndarray::Array2<f32>,
         mfcc2: &ndarray::Array2<f32>,
     ) -> Vec<(usize, usize)> {
-        let (mut cost_matrix, centers) = time!(self.cost_matrix(&mfcc1.view(), &mfcc2.view()), "Cost matrix");
-        let end = time!(self.accumulated_cost_matrix(&mut cost_matrix, &centers), "Acc cost matrix");
+        let (mut cost_matrix, centers) = time!(
+            self.cost_matrix(&mfcc1.view(), &mfcc2.view()),
+            "Cost matrix"
+        );
+        let end = time!(
+            self.accumulated_cost_matrix(&mut cost_matrix, &centers),
+            "Acc cost matrix"
+        );
         time!(self.best_path(&cost_matrix, &centers, end), "Best path")
     }
 }

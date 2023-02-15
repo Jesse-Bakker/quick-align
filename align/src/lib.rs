@@ -6,7 +6,9 @@ mod tts;
 use std::thread;
 
 use dtw::Dtw;
-use mfcc::{freq::Freq, FrameExtractionOpts, MelBanksOpts, Mfcc, MfccOptions, OfflineFeature};
+use mfcc::{
+    FrameExtractionOpts, FrameSupplier, MelBanksOpts, Mfcc, MfccComputer, MfccOptions,
+};
 use ndarray::Array2;
 
 use crate::{
@@ -22,22 +24,54 @@ const DTW_MARGIN: f32 = 60. /* seconds */;
 const DTW_DELTA: usize = (2. * DTW_MARGIN / (MFCC_WINDOW_SHIFT * 0.001)) as usize;
 const DTW_SKIP_PENALTY: f32 = 0.70;
 
-fn compute_mfcc(wave: Vec<f32>, sample_freq: u32) -> Array2<f32> {
-    let mut computer = OfflineFeature::new(Mfcc::new(MfccOptions {
+struct PreloadedFrameSupplier {
+    frame_length: usize,
+    frame_shift: usize,
+    i: usize,
+    wave: Vec<f32>,
+}
+
+impl PreloadedFrameSupplier {
+    fn new(wave: Vec<f32>, frame_opts: FrameExtractionOpts) -> Self {
+        Self {
+            frame_length: frame_opts.win_size_padded(),
+            frame_shift: frame_opts.win_shift(),
+            i: 0,
+            wave,
+        }
+    }
+}
+
+impl FrameSupplier for PreloadedFrameSupplier {
+    fn n_samples_est(&self) -> usize {
+        self.wave.len()
+    }
+
+    fn fill_next(&mut self, output: &mut [f32]) -> usize {
+        let start = self.i * self.frame_shift;
+        if start > self.n_samples_est() {
+            return 0;
+        }
+
+        let end = (start + self.frame_length).min(self.n_samples_est());
+        let len = end - start;
+        output[..len].copy_from_slice(&self.wave[start..end]);
+        self.i += 1;
+        len
+    }
+}
+
+fn compute_mfcc(wave: impl FrameSupplier, frame_opts: FrameExtractionOpts) -> Array2<f32> {
+    let mut computer = MfccComputer::new(Mfcc::new(MfccOptions {
         mel_opts: MelBanksOpts {
             n_bins: 40,
             low_freq: Some(133.3333.into()),
             high_freq: Some(6855.4976.into()),
         },
-        frame_opts: FrameExtractionOpts {
-            sample_freq: Freq::from(sample_freq as f32),
-            frame_length_ms: MFCC_WINDOW_LENGTH,
-            frame_shift_ms: MFCC_WINDOW_SHIFT,
-            emphasis_factor: 0.97,
-        },
+        frame_opts,
         n_ceps: 13,
     }));
-    computer.compute(wave.as_slice())
+    computer.compute(wave)
 }
 
 fn search_sorted_right(a: Vec<usize>, v: impl ExactSizeIterator<Item = usize>) -> Vec<usize> {
@@ -80,14 +114,22 @@ macro_rules! time {
 }
 
 pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
+    let frame_opts = FrameExtractionOpts {
+        sample_freq: 22050,
+        frame_length_ms: MFCC_WINDOW_LENGTH,
+        frame_shift_ms: MFCC_WINDOW_SHIFT,
+        emphasis_factor: 0.97,
+    };
     let (audio_mfcc, synth_mfcc, anchors) = thread::scope(|s| {
         let t_audio = s.spawn(|| {
             let reader = AudioReader::new();
             let audio_samples = time!(
-                reader.read_and_transcode_file(audio_file, 22050).unwrap(),
+                reader
+                    .read_and_transcode_file(audio_file, frame_opts)
+                    .unwrap(),
                 "Read and transcode audio"
             );
-            time!(compute_mfcc(audio_samples, 22050), "Audio mfcc")
+            time!(compute_mfcc(audio_samples, frame_opts), "Audio mfcc")
         });
 
         let t_synth = s.spawn(|| {
@@ -101,6 +143,7 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
                 .into_iter()
                 .map(|sample| sample as f32 / u16::MAX as f32)
                 .collect();
+            let frame_supplier = PreloadedFrameSupplier::new(float_samples, frame_opts);
 
             let mut anchors = synth_samples.anchors;
             // The first fragment starts at 0, so this converts from end-timings to begin-timings
@@ -108,7 +151,7 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
 
             (
                 anchors,
-                compute_mfcc(float_samples, synth_samples.sample_rate as u32),
+                compute_mfcc(frame_supplier, frame_opts),
             )
         });
 
