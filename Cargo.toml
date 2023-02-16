@@ -2,4 +2,5 @@
 members = [
     "mfcc",
     "align",
+    "espeakng",
 ]

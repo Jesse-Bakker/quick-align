@@ -388,7 +388,6 @@ mod tests {
         dtw_exact.accumulated_cost_matrix(&mut cm_exact);
         dtw_striped.accumulated_cost_matrix(&mut cm_striped.0, &cm_striped.1);
 
-        dbg!((&cm_exact, &cm_striped.0));
         assert!(cm_exact.abs_diff_eq(&cm_striped.0, 1e-6));
     }
 }
