@@ -19,14 +19,11 @@ pub(crate) struct StreamingFrameSupplier {
     ctx: Input,
     decoded_frame: frame::Audio,
     resampled_frame: frame::Audio,
-    buf_idx: usize,
     stream_idx: usize,
-    frame_shift: usize,
     n_samples_est: usize,
     decoder: ffmpeg::decoder::Audio,
     resampler: Context,
     draining: bool,
-    last_output: Vec<f32>,
 }
 
 impl StreamingFrameSupplier {
@@ -36,16 +33,12 @@ impl StreamingFrameSupplier {
         resampler: Context,
         stream_idx: usize,
         n_samples_est: usize,
-        frame_opts: FrameExtractionOpts,
     ) -> Self {
         Self {
             ctx,
             decoded_frame: frame::Audio::empty(),
             resampled_frame: frame::Audio::empty(),
-            buf_idx: 0,
             stream_idx,
-            last_output: Vec::new(),
-            frame_shift: frame_opts.win_shift(),
             n_samples_est,
             decoder,
             resampler,
@@ -92,39 +85,18 @@ impl StreamingFrameSupplier {
             if let Some(packet) = packet {
                 self.decoder.send_packet(&packet)?;
             } else {
+                dbg!("No more packets, start draining");
                 // We are out of packets. Drain the decoder
                 self.draining = true;
                 self.decoder.send_eof()?;
             };
             return self.fill_internal_buf();
         } else {
+            dbg!("Done");
             // Done
             return Ok(None);
         }
         Ok(Some(self.resampled_frame.samples()))
-    }
-
-    fn init_last_output(&mut self, len: usize) -> usize {
-        assert!(self.last_output.is_empty());
-        self.last_output.reserve_exact(len);
-        let mut filled = 0;
-        while let Some(n) = self.fill_internal_buf().unwrap() {
-            if n == 0 {
-                return filled;
-            }
-            let from_this_buf = usize::min(n, len - filled);
-            unsafe {
-                let buf =
-                    slice::from_raw_parts(self.resampled_frame.data(0).as_ptr() as *const f32, n);
-                self.last_output.extend_from_slice(&buf[..from_this_buf]);
-            };
-            filled += n;
-            if filled > len {
-                self.buf_idx = from_this_buf;
-                return len;
-            }
-        }
-        0
     }
 }
 
@@ -134,45 +106,17 @@ impl FrameSupplier for StreamingFrameSupplier {
     }
 
     fn fill_next(&mut self, output: &mut [f32]) -> usize {
-        assert!(output.len() > self.frame_shift);
-        if self.last_output.is_empty() {
-            let len = self.init_last_output(output.len());
-            output[..len].copy_from_slice(&self.last_output);
-            return len;
-        }
-
-        let mut len = output.len() - self.frame_shift;
-        output[..len].copy_from_slice(&self.last_output[self.frame_shift..]);
-
-        let mut remaining = self.frame_shift;
-        while remaining != 0 {
-            let left_in_buf = {
-                let left_in_buf = self.resampled_frame.samples() - self.buf_idx;
-                if left_in_buf != 0 {
-                    left_in_buf
-                } else {
-                    self.buf_idx = 0;
-                    match self.fill_internal_buf().unwrap() {
-                        Some(0) | None => return len,
-                        Some(n) => n,
-                    }
-                }
-            };
-            let from_this_buf = usize::min(remaining, left_in_buf);
-            unsafe {
-                let buf = slice::from_raw_parts(
-                    self.resampled_frame.data(0).as_ptr() as *const f32,
-                    self.resampled_frame.samples(),
-                );
-                output[len..len + from_this_buf]
-                    .copy_from_slice(&buf[self.buf_idx..(self.buf_idx + from_this_buf)]);
-                self.buf_idx += from_this_buf;
-                len += from_this_buf;
-                remaining -= from_this_buf;
+        match self.fill_internal_buf().unwrap() {
+            Some(n) if n > 0 => {
+                let slice = unsafe {
+                    // Cast to float
+                    slice::from_raw_parts(self.resampled_frame.data(0).as_ptr() as *const _, n)
+                };
+                output[..n].copy_from_slice(slice);
+                n
             }
+            _ => 0,
         }
-        self.last_output = output.into();
-        len
     }
 }
 
@@ -231,7 +175,6 @@ impl AudioReader {
             resampler,
             input_index,
             samples_est,
-            frame_opts,
         ))
     }
 }

@@ -103,7 +103,10 @@ impl MelBanks {
                 (center_freq, (first_index.unwrap(), this_bin))
             })
             .unzip();
-        Self { bins, _center_freqs: center_freqs }
+        Self {
+            bins,
+            _center_freqs: center_freqs,
+        }
     }
 
     fn apply_in(&self, power_spectrum: ArrayView1<Float>, mel_energies: ArrayViewMut1<Float>) {
@@ -224,6 +227,62 @@ impl Feature for Mfcc {
     }
 }
 
+struct FrameExtractor<T: FrameSupplier> {
+    frame_supplier: T,
+    first: bool,
+    opts: FrameExtractionOpts,
+    last: Box<[Float]>,
+    current: Box<[Float]>,
+    idx: usize,
+    buf: Box<[Float]>,
+    buf_len: usize,
+}
+
+impl<T: FrameSupplier> FrameExtractor<T> {
+    fn new(supplier: T, options: FrameExtractionOpts) -> Self {
+        let frame_size = options.win_size_padded();
+        Self {
+            frame_supplier: supplier,
+            first: true,
+            opts: options,
+            last: vec![0.; frame_size].into_boxed_slice(),
+            current: vec![0.; frame_size].into_boxed_slice(),
+            idx: 0,
+            buf: vec![0.; frame_size].into_boxed_slice(),
+            buf_len: 0,
+        }
+    }
+
+    fn extract_frame(&mut self) -> std::ops::ControlFlow<&mut [Float], &mut [Float]> {
+        let len = self.opts.win_size_padded();
+        let mut filled = if self.first {
+            self.first = false;
+            0
+        } else {
+            let n = len - self.opts.win_shift();
+            self.current[..n].copy_from_slice(&self.last[self.opts.win_shift()..]);
+            n
+        };
+
+        while filled < len {
+            if self.idx >= self.buf_len {
+                self.buf_len = self.frame_supplier.fill_next(&mut self.buf);
+                self.idx = 0;
+                if self.buf_len == 0 {
+                    self.current[filled..].fill(0.);
+                    return std::ops::ControlFlow::Break(&mut self.current);
+                }
+            }
+            let from_buf = usize::min(self.buf_len - self.idx, len - filled);
+            self.current[filled..filled + from_buf].copy_from_slice(&self.buf[self.idx..self.idx + from_buf]);
+            filled += from_buf;
+            self.idx += from_buf;
+        }
+        self.last.copy_from_slice(&self.current);
+        std::ops::ControlFlow::Continue(&mut self.current)
+    }
+}
+
 pub struct MfccOptions {
     pub mel_opts: MelBanksOpts,
     pub frame_opts: FrameExtractionOpts,
@@ -264,21 +323,23 @@ impl MfccComputer {
         let frame_length_padded = self.feature.frame_options().win_size_padded();
         let num_frames = n_samples / frame_shift + 1;
 
+        let mut frame_extractor = FrameExtractor::new(wave, opts);
         let hamming_window = hamming_window(frame_length_padded);
-        let mut frame = Array1::zeros(frame_length_padded);
         let mut output = Array2::zeros((num_frames, self.feature.n_coeffs()));
 
         let mut i = 0;
         let mut keep_going = true;
+
         while keep_going {
-            let n = wave.fill_next(frame.as_slice_mut().unwrap());
-
-            if n < frame_length_padded {
-                frame.slice_mut(s![n..]).fill(0.);
-                keep_going = false;
-            }
-            Self::preemphasize(frame.as_slice_mut().unwrap(), &opts);
-
+            let frame = match frame_extractor.extract_frame() {
+                std::ops::ControlFlow::Continue(f) => f,
+                std::ops::ControlFlow::Break(f) => {
+                    keep_going = false;
+                    f
+                }
+            };
+            Self::preemphasize(frame, &opts);
+            let mut frame = ArrayViewMut1::from(frame);
             frame *= &hamming_window;
 
             if i == output.nrows() {
@@ -289,7 +350,7 @@ impl MfccComputer {
             let feature = output.row_mut(i);
             self.feature.compute(frame.view_mut(), feature);
             i += 1;
-        };
+        }
         output
     }
 }

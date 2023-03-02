@@ -6,9 +6,7 @@ mod tts;
 use std::thread;
 
 use dtw::Dtw;
-use mfcc::{
-    FrameExtractionOpts, FrameSupplier, MelBanksOpts, Mfcc, MfccComputer, MfccOptions,
-};
+use mfcc::{FrameExtractionOpts, FrameSupplier, MelBanksOpts, Mfcc, MfccComputer, MfccOptions};
 use ndarray::Array2;
 
 use crate::{
@@ -48,16 +46,11 @@ impl FrameSupplier for PreloadedFrameSupplier {
     }
 
     fn fill_next(&mut self, output: &mut [f32]) -> usize {
-        let start = self.i * self.frame_shift;
-        if start > self.n_samples_est() {
-            return 0;
-        }
-
-        let end = (start + self.frame_length).min(self.n_samples_est());
-        let len = end - start;
-        output[..len].copy_from_slice(&self.wave[start..end]);
-        self.i += 1;
-        len
+        let i = self.i;
+        let n = usize::min(output.len(), self.wave.len() - i);
+        output[..n].copy_from_slice(&self.wave[i..i + n]);
+        self.i += n;
+        n
     }
 }
 
@@ -149,10 +142,7 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
             // The first fragment starts at 0, so this converts from end-timings to begin-timings
             anchors.insert(0, 0);
 
-            (
-                anchors,
-                compute_mfcc(frame_supplier, frame_opts),
-            )
+            (anchors, compute_mfcc(frame_supplier, frame_opts))
         });
 
         let audio_mfcc = t_audio.join().unwrap();
