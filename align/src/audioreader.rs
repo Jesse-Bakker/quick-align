@@ -117,7 +117,10 @@ impl FrameSupplier for StreamingFrameSupplier {
         let from_buf = usize::min(output.len(), self.resampled_frame.samples() - self.idx);
         let slice = unsafe {
             // Cast to float
-            slice::from_raw_parts(self.resampled_frame.data(0).as_ptr() as *const _, self.resampled_frame.samples())
+            slice::from_raw_parts(
+                self.resampled_frame.data(0).as_ptr() as *const _,
+                self.resampled_frame.samples(),
+            )
         };
         output[..from_buf].copy_from_slice(&slice[self.idx..self.idx + from_buf]);
         self.idx += from_buf;

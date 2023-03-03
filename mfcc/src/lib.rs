@@ -274,7 +274,8 @@ impl<T: FrameSupplier> FrameExtractor<T> {
                 }
             }
             let from_buf = usize::min(self.buf_len - self.idx, len - filled);
-            self.current[filled..filled + from_buf].copy_from_slice(&self.buf[self.idx..self.idx + from_buf]);
+            self.current[filled..filled + from_buf]
+                .copy_from_slice(&self.buf[self.idx..self.idx + from_buf]);
             filled += from_buf;
             self.idx += from_buf;
         }
