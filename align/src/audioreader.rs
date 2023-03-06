@@ -87,14 +87,12 @@ impl StreamingFrameSupplier {
             if let Some(packet) = packet {
                 self.decoder.send_packet(&packet)?;
             } else {
-                dbg!("No more packets, start draining");
                 // We are out of packets. Drain the decoder
                 self.draining = true;
                 self.decoder.send_eof()?;
             };
             return self.fill_internal_buf();
         } else {
-            dbg!("Done");
             // Done
             return Ok(None);
         }

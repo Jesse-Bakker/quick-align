@@ -1,13 +1,15 @@
 mod audioreader;
 mod dtw;
 mod dtw_striped;
+mod fast_dtw;
 mod tts;
 
 use std::thread;
 
 use dtw::Dtw;
+use fast_dtw::{dtw_chiboe, fast_dtw};
 use mfcc::{FrameExtractionOpts, FrameSupplier, MelBanksOpts, Mfcc, MfccComputer, MfccOptions};
-use ndarray::Array2;
+use ndarray::{Array2, ArrayView2};
 
 use crate::{
     audioreader::AudioReader,
@@ -18,9 +20,8 @@ use crate::{
 const MFCC_WINDOW_SHIFT: f32 = 40. /* milliseconds */;
 const MFCC_WINDOW_LENGTH: f32 = 100. /* milliseconds */;
 
-const DTW_MARGIN: f32 = 60. /* seconds */;
+const DTW_MARGIN: f32 = 30. /* seconds */;
 const DTW_DELTA: usize = (2. * DTW_MARGIN / (MFCC_WINDOW_SHIFT * 0.001)) as usize;
-const DTW_SKIP_PENALTY: f32 = 0.70;
 
 struct PreloadedFrameSupplier {
     frame_length: usize,
@@ -54,7 +55,7 @@ impl FrameSupplier for PreloadedFrameSupplier {
     }
 }
 
-fn compute_mfcc(wave: impl FrameSupplier, frame_opts: FrameExtractionOpts) -> Array2<f32> {
+fn compute_mfcc(wave: impl FrameSupplier, frame_opts: FrameExtractionOpts) -> Vec<[f32; 13]> {
     let mut computer = MfccComputer::new(Mfcc::new(MfccOptions {
         mel_opts: MelBanksOpts {
             n_bins: 40,
@@ -99,10 +100,17 @@ fn find_boundaries(
 
 macro_rules! time {
     ($s:expr, $m:expr) => {{
-        let instant = std::time::Instant::now();
-        let result = $s;
-        eprintln!("{}: {}", $m, instant.elapsed().as_millis());
-        result
+        #[cfg(timing)]
+        {
+            let instant = std::time::Instant::now();
+            let result = $s;
+            eprintln!("{}: {}", $m, instant.elapsed().as_millis());
+            result
+        }
+        #[cfg(not(timing))]
+        {
+            $s
+        }
     }};
 }
 
@@ -151,6 +159,7 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
     });
 
     // Exact algorithm is faster (and more accurate) for smaller inputs
+    /*
     let dtw = if false
     /*n_samples < 2 * DTW_DELTA*/
     {
@@ -158,8 +167,9 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
     } else {
         DtwAlgorithm::Striped(DTWStriped::new(DTW_DELTA, Some(DTW_SKIP_PENALTY)))
     };
+    */
 
-    let path = time!(dtw.path(&audio_mfcc, &synth_mfcc), "DTW");
+    let path = fast_dtw::fast_dtw(&audio_mfcc, &synth_mfcc, Some(100));
     let (real_indices, synth_indices): (Vec<_>, Vec<_>) = path.into_iter().unzip();
     let boundaries = find_boundaries(real_indices, synth_indices, anchors);
 

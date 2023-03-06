@@ -317,7 +317,7 @@ impl MfccComputer {
         frame[0] -= emph_fact * frame[0];
     }
 
-    pub fn compute(&mut self, mut wave: impl FrameSupplier) -> Array2<Float> {
+    pub fn compute(&mut self, wave: impl FrameSupplier) -> Vec<[f32; 13]> {
         let n_samples = wave.n_samples_est();
         let opts = *self.feature.frame_options();
         let frame_shift = opts.win_shift();
@@ -326,9 +326,8 @@ impl MfccComputer {
 
         let mut frame_extractor = FrameExtractor::new(wave, opts);
         let hamming_window = hamming_window(frame_length_padded);
-        let mut output = Array2::zeros((num_frames, self.feature.n_coeffs()));
+        let mut output = Vec::with_capacity(num_frames);
 
-        let mut i = 0;
         let mut keep_going = true;
 
         while keep_going {
@@ -343,14 +342,9 @@ impl MfccComputer {
             let mut frame = ArrayViewMut1::from(frame);
             frame *= &hamming_window;
 
-            if i == output.nrows() {
-                output
-                    .push_row(Array1::zeros(self.feature.n_coeffs()).view())
-                    .unwrap();
-            }
-            let feature = output.row_mut(i);
-            self.feature.compute(frame.view_mut(), feature);
-            i += 1;
+            output.push([0.; 13]);
+            let feat_view = ArrayViewMut1::from(output.last_mut().unwrap());
+            self.feature.compute(frame.view_mut(), feat_view);
         }
         output
     }

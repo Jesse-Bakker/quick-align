@@ -83,15 +83,14 @@ impl DTWExact {
         mfcc2: &ArrayView2<f32>,
     ) -> Array2<f32> {
         // Discard the first component
-        let mfcc1 = mfcc1.slice(s![1.., ..]);
-        let mfcc2 = mfcc2.slice(s![1.., ..]);
+        let mfcc1 = mfcc1.slice(s![.., 1..]);
+        let mfcc2 = mfcc2.slice(s![.., 1..]);
 
-        let normsq_1 = (&mfcc1 * &mfcc1).sum_axis(Axis(0)).map(|elem| elem.sqrt());
-        let normsq_2 = (&mfcc2 * &mfcc2).sum_axis(Axis(0)).map(|elem| elem.sqrt());
+        let normsq_1 = (&mfcc1 * &mfcc1).sum_axis(Axis(1)).map(|elem| elem.sqrt());
+        let normsq_2 = (&mfcc2 * &mfcc2).sum_axis(Axis(1)).map(|elem| elem.sqrt());
 
-        let cost_matrix = &mfcc1.t().dot(&mfcc2);
-        let norm_matrix = &normsq_1.to_shape((normsq_1.len(), 1)).unwrap()
-            * &normsq_2.to_shape((1, normsq_2.len())).unwrap();
+        let cost_matrix = &mfcc1.dot(&mfcc2.t());
+        let norm_matrix = &normsq_1 * &normsq_2;
         1. - (cost_matrix / norm_matrix)
     }
 }

@@ -27,23 +27,21 @@ impl DTWStriped {
 }
 
 impl DTWStriped {
-    fn cost_matrix(
+    pub(crate) fn cost_matrix(
         &self,
         mfcc1: &ArrayView2<f32>,
         mfcc2: &ArrayView2<f32>,
     ) -> (Array2<f32>, Array1<usize>) {
         let mfcc1 = mfcc1.slice(s![.., 1..]);
         let mfcc2 = mfcc2.slice(s![.., 1..]);
-        let mfcc1 = mfcc1.t();
-        let mfcc2 = mfcc2.t();
 
-        let normsq_1 = (&mfcc1 * &mfcc1).sum_axis(Axis(0)).map(|elem| elem.sqrt());
-        let normsq_2 = (&mfcc2 * &mfcc2).sum_axis(Axis(0)).map(|elem| elem.sqrt());
+        let normsq_1 = (&mfcc1 * &mfcc1).sum_axis(Axis(1)).map(|elem| elem.sqrt());
+        let normsq_2 = (&mfcc2 * &mfcc2).sum_axis(Axis(1)).map(|elem| elem.sqrt());
 
         let delta = self.delta;
 
-        let n = mfcc1.shape()[1];
-        let m = mfcc2.shape()[1];
+        let n = mfcc1.shape()[0];
+        let m = mfcc2.shape()[0];
 
         let delta = delta.min(m);
 
@@ -65,37 +63,29 @@ impl DTWStriped {
             };
 
             let tmp = mfcc1
-                .slice(s![.., i])
-                .t()
-                .dot(&mfcc2.slice(s![.., range_start..range_end]));
+                .slice(s![i, ..])
+                .dot(&mfcc2.slice(s![range_start..range_end, ..]).t());
             cost_matrix.slice_mut(s![i, ..]).assign(
                 &(1. - (tmp / (normsq_1[i] * &normsq_2.slice(s![range_start..range_end])))),
             );
+            cost_matrix.slice_mut(s![i, ..]).mapv_inplace(|x| x.abs());
             centers[i] = range_start;
         }
         (cost_matrix, centers)
     }
 
-    fn accumulated_cost_matrix(
+    pub(crate) fn accumulated_cost_matrix(
         &self,
         cost_matrix: &mut ndarray::Array2<f32>,
         centers: &Array1<usize>,
-    ) -> (usize, usize) {
+    ) {
         let (n, delta) = (cost_matrix.shape()[0], cost_matrix.shape()[1]);
 
         let current_row = cost_matrix.slice(s![0, ..]).to_owned();
 
-        let mut min_dist_skip_to_end = self.skip_penalty * (n * delta) as f32;
-        let mut end = (0, 0);
-
         for j in 1..delta {
             let i = 0;
             let cost = current_row[j] + cost_matrix[(0, j - 1)];
-            let cost_skip_to_end = cost + self.skip_penalty * (n - i + delta - j - 2) as f32;
-            if cost_skip_to_end < min_dist_skip_to_end {
-                min_dist_skip_to_end = cost_skip_to_end;
-                end = (i, j);
-            }
             cost_matrix[(i, j)] = cost;
         }
 
@@ -124,31 +114,23 @@ impl DTWStriped {
                     };
                 let min_cost = current_row[j] + min!(cost0, cost1, cost2);
 
-                let cost_skip_to_end =
-                    min_cost + self.skip_penalty * (n - i + delta - j - 2) as f32;
-                if cost_skip_to_end < min_dist_skip_to_end {
-                    min_dist_skip_to_end = cost_skip_to_end;
-                    end = (i, j);
-                }
                 cost_matrix[(i, j)] = min_cost;
             }
         }
-        end
     }
 
-    fn best_path(
+    pub(crate) fn best_path(
         &self,
         accumulated_cost_matrix: &ndarray::Array2<f32>,
         centers: &Array1<usize>,
-        end: (usize, usize),
     ) -> std::vec::Vec<(usize, usize)> {
         let (n, delta) = (
             accumulated_cost_matrix.shape()[0],
             accumulated_cost_matrix.shape()[1],
         );
 
-        let (mut i, mut j) = end;
-        j += centers[i];
+        let mut i = n - 1;
+        let mut j = delta + centers[i];
         let mut path = vec![(i, j)];
 
         while i > 0 || j > 0 {
@@ -203,12 +185,20 @@ impl DTWStriped {
 
 macro_rules! time {
     ($s:expr, $m:expr) => {{
-        let instant = std::time::Instant::now();
-        let result = $s;
-        eprintln!("{}: {}", $m, instant.elapsed().as_millis());
-        result
+        #[cfg(timing)]
+        {
+            let instant = std::time::Instant::now();
+            let result = $s;
+            eprintln!("{}: {}", $m, instant.elapsed().as_millis());
+            result
+        }
+        #[cfg(not(timing))]
+        {
+            $s
+        }
     }};
 }
+
 impl Dtw for DTWStriped {
     fn path(
         &self,
@@ -219,11 +209,11 @@ impl Dtw for DTWStriped {
             self.cost_matrix(&mfcc1.view(), &mfcc2.view()),
             "Cost matrix"
         );
-        let end = time!(
+        time!(
             self.accumulated_cost_matrix(&mut cost_matrix, &centers),
             "Acc cost matrix"
         );
-        time!(self.best_path(&cost_matrix, &centers, end), "Best path")
+        time!(self.best_path(&cost_matrix, &centers), "Best path")
     }
 }
 
