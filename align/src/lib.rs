@@ -1,6 +1,7 @@
 mod audioreader;
 mod dtw;
 mod dtw_striped;
+mod fast_dtw;
 mod tts;
 
 use std::thread;
