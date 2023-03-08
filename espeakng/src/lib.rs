@@ -172,7 +172,7 @@ unsafe extern "C" fn callback(
     0
 }
 
-struct SpokenIter<S: AsRef<str>, I: Iterator<Item = S>> {
+pub struct SpokenIter<S: AsRef<str>, I: Iterator<Item = S>> {
     voice: Voice,
     utterances: I,
 }
@@ -274,11 +274,11 @@ impl EspeakNg {
         }
     }
 
-    pub fn synthesize_multiple<S: AsRef<str>>(
+    pub fn synthesize_multiple<S: AsRef<str>, I: Iterator<Item = S>>(
         &self,
         mut voice: Voice,
-        utterances: impl Iterator<Item = S>,
-    ) -> Result<impl Iterator<Item = Fragment>, Error> {
+        utterances: I,
+    ) -> Result<SpokenIter<S, I>, Error> {
         unsafe {
             es_try!(espeak_ng_SetVoiceByProperties(&mut voice.0 as *mut _))?;
             espeak_SetSynthCallback(Some(callback));

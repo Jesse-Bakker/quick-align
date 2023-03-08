@@ -227,8 +227,8 @@ impl Feature for Mfcc {
     }
 }
 
-struct FrameExtractor<T: FrameSupplier> {
-    frame_supplier: T,
+struct FrameExtractor<'a, T: FrameSupplier> {
+    frame_supplier: &'a mut T,
     first: bool,
     opts: FrameExtractionOpts,
     last: Box<[Float]>,
@@ -238,8 +238,8 @@ struct FrameExtractor<T: FrameSupplier> {
     buf_len: usize,
 }
 
-impl<T: FrameSupplier> FrameExtractor<T> {
-    fn new(supplier: T, options: FrameExtractionOpts) -> Self {
+impl<'a, T: FrameSupplier> FrameExtractor<'a, T> {
+    fn new(supplier: &'a mut T, options: FrameExtractionOpts) -> Self {
         let frame_size = options.win_size_padded();
         Self {
             frame_supplier: supplier,
@@ -317,7 +317,7 @@ impl MfccComputer {
         frame[0] -= emph_fact * frame[0];
     }
 
-    pub fn compute(&mut self, wave: impl FrameSupplier) -> Vec<[f32; 13]> {
+    pub fn compute(&mut self, wave: &mut impl FrameSupplier) -> Vec<[f32; 13]> {
         let n_samples = wave.n_samples_est();
         let opts = *self.feature.frame_options();
         let frame_shift = opts.win_shift();

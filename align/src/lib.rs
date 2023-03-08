@@ -55,7 +55,7 @@ impl FrameSupplier for PreloadedFrameSupplier {
     }
 }
 
-fn compute_mfcc(wave: impl FrameSupplier, frame_opts: FrameExtractionOpts) -> Vec<[f32; 13]> {
+fn compute_mfcc(wave: &mut impl FrameSupplier, frame_opts: FrameExtractionOpts) -> Vec<[f32; 13]> {
     let mut computer = MfccComputer::new(Mfcc::new(MfccOptions {
         mel_opts: MelBanksOpts {
             n_bins: 40,
@@ -124,33 +124,24 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
     let (audio_mfcc, synth_mfcc, anchors) = thread::scope(|s| {
         let t_audio = s.spawn(|| {
             let reader = AudioReader::new();
-            let audio_samples = time!(
+            let mut audio_samples = time!(
                 reader
                     .read_and_transcode_file(audio_file, frame_opts)
                     .unwrap(),
                 "Read and transcode audio"
             );
-            time!(compute_mfcc(audio_samples, frame_opts), "Audio mfcc")
+            time!(compute_mfcc(&mut audio_samples, frame_opts), "Audio mfcc")
         });
 
         let t_synth = s.spawn(|| {
-            let synth_samples = time!(
-                tts::speak_multiple(text_fragments.iter().map(|s| s.as_str()).collect()).unwrap(),
+            let mut synth_samples = time!(
+                tts::speak_multiple(text_fragments.into()).unwrap(),
                 "Synthesize audio"
             );
 
-            let float_samples: Vec<f32> = synth_samples
-                .wav
-                .into_iter()
-                .map(|sample| sample as f32 / u16::MAX as f32)
-                .collect();
-            let frame_supplier = PreloadedFrameSupplier::new(float_samples, frame_opts);
-
-            let mut anchors = synth_samples.anchors;
-            // The first fragment starts at 0, so this converts from end-timings to begin-timings
-            anchors.insert(0, 0);
-
-            (anchors, compute_mfcc(frame_supplier, frame_opts))
+            let mfcc = compute_mfcc(&mut synth_samples, frame_opts);
+            let anchors = synth_samples.anchors();
+            (anchors, mfcc)
         });
 
         let audio_mfcc = t_audio.join().unwrap();

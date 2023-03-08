@@ -1,11 +1,33 @@
 use espeakng::*;
 use mfcc::FrameSupplier;
 
-pub(crate) struct StreamingFrameSupplier<I> {
+pub(crate) struct StreamingFrameSupplier<I>
+where
+    I: Iterator<Item = Fragment>,
+{
     spoken_utterances: I,
     cur: Fragment,
-    achors: Vec<usize>,
+    anchors: Vec<usize>,
     idx: usize,
+    duration: usize,
+}
+
+impl<I> StreamingFrameSupplier<I>
+where
+    I: Iterator<Item = Fragment>,
+{
+    fn new(utterances: I) -> Self {
+        Self {
+            spoken_utterances: utterances,
+            cur: Fragment::default(),
+            anchors: vec![0],
+            idx: 0,
+            duration: 0,
+        }
+    }
+    pub(crate) fn anchors(&self) -> Vec<usize> {
+        self.anchors.clone()
+    }
 }
 
 impl<I> FrameSupplier for StreamingFrameSupplier<I>
@@ -16,16 +38,26 @@ where
         0
     }
 
-    fn fill_next(&mut self, output: &mut [Float]) -> usize {
+    fn fill_next(&mut self, output: &mut [f32]) -> usize {
         if self.idx >= self.cur.data.len() {
             let Some(frag)= self.spoken_utterances.next() else {
                 return 0;
             };
+            self.duration += frag.duration;
+            self.anchors.push(self.duration);
             self.cur = frag;
             self.idx = 0;
         }
 
         let from_buf = usize::min(output.len(), self.cur.data.len() - self.idx);
+        for (o, i) in output[..from_buf]
+            .iter_mut()
+            .zip(self.cur.data[self.idx..].iter())
+        {
+            *o = *i as f32;
+        }
+        self.idx += from_buf;
+        from_buf
     }
 }
 
@@ -36,35 +68,14 @@ pub(crate) struct Spoken {
 }
 
 /// Perform Text-To-Speech
-pub(crate) fn speak_multiple(utterances: Vec<&str>) -> Result<Spoken, ()> {
+pub(crate) fn speak_multiple(
+    utterances: Vec<String>,
+) -> Result<StreamingFrameSupplier<impl Iterator<Item = Fragment>>, ()> {
     let es = EspeakNg::new().map_err(|_| ())?;
     let sample_rate = es.sample_rate();
-    let out: Vec<_> = es
+    let spoken = es
         .synthesize_multiple(Voice::default(), utterances.into_iter())
-        .map_err(|_| ())?
-        .collect();
-
-    let size = out.iter().fold(0, |acc, e| acc + e.data.len());
-
-    let mut sum = 0;
-    let anchors = out
-        .iter()
-        .map(|b| {
-            sum += b.duration;
-            sum
-        })
-        .collect();
-
-    let wav = out
-        .into_iter()
-        .fold(Vec::with_capacity(size), |mut v, mut w| {
-            v.append(&mut w.data);
-            v
-        });
-
-    Ok(Spoken {
-        wav,
-        sample_rate,
-        anchors,
-    })
+        .map_err(|_| ())?;
+    let s = StreamingFrameSupplier::new(spoken);
+    Ok(s)
 }
