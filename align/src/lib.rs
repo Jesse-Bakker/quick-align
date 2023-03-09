@@ -6,66 +6,28 @@ mod tts;
 
 use std::thread;
 
-use dtw::Dtw;
-use fast_dtw::{dtw_chiboe, fast_dtw};
-use mfcc::{FrameExtractionOpts, FrameSupplier, MelBanksOpts, Mfcc, MfccComputer, MfccOptions};
-use ndarray::{Array2, ArrayView2};
-
-use crate::{
-    audioreader::AudioReader,
-    dtw::{DTWExact, DtwAlgorithm},
-    dtw_striped::DTWStriped,
-};
+use audioreader::AudioReader;
+use mfcc::{mfcc, FrameExtractionOpts, FrameSupplier, MelBanksOpts, MfccIter, MfccOptions};
 
 const MFCC_WINDOW_SHIFT: f32 = 40. /* milliseconds */;
 const MFCC_WINDOW_LENGTH: f32 = 100. /* milliseconds */;
 
-const DTW_MARGIN: f32 = 30. /* seconds */;
-const DTW_DELTA: usize = (2. * DTW_MARGIN / (MFCC_WINDOW_SHIFT * 0.001)) as usize;
-
-struct PreloadedFrameSupplier {
-    frame_length: usize,
-    frame_shift: usize,
-    i: usize,
-    wave: Vec<f32>,
-}
-
-impl PreloadedFrameSupplier {
-    fn new(wave: Vec<f32>, frame_opts: FrameExtractionOpts) -> Self {
-        Self {
-            frame_length: frame_opts.win_size_padded(),
-            frame_shift: frame_opts.win_shift(),
-            i: 0,
-            wave,
-        }
-    }
-}
-
-impl FrameSupplier for PreloadedFrameSupplier {
-    fn n_samples_est(&self) -> usize {
-        self.wave.len()
-    }
-
-    fn fill_next(&mut self, output: &mut [f32]) -> usize {
-        let i = self.i;
-        let n = usize::min(output.len(), self.wave.len() - i);
-        output[..n].copy_from_slice(&self.wave[i..i + n]);
-        self.i += n;
-        n
-    }
-}
-
-fn compute_mfcc(wave: &mut impl FrameSupplier, frame_opts: FrameExtractionOpts) -> Vec<[f32; 13]> {
-    let mut computer = MfccComputer::new(Mfcc::new(MfccOptions {
-        mel_opts: MelBanksOpts {
-            n_bins: 40,
-            low_freq: Some(133.3333.into()),
-            high_freq: Some(6855.4976.into()),
+fn compute_mfcc<T: FrameSupplier>(
+    wave: &mut T,
+    frame_opts: FrameExtractionOpts,
+) -> MfccIter<'_, T> {
+    mfcc(
+        MfccOptions {
+            mel_opts: MelBanksOpts {
+                n_bins: 40,
+                low_freq: Some(133.3333.into()),
+                high_freq: Some(6855.4976.into()),
+            },
+            frame_opts,
+            n_ceps: 13,
         },
-        frame_opts,
-        n_ceps: 13,
-    }));
-    computer.compute(wave)
+        wave,
+    )
 }
 
 fn search_sorted_right(a: Vec<usize>, v: impl ExactSizeIterator<Item = usize>) -> Vec<usize> {
@@ -130,7 +92,10 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
                     .unwrap(),
                 "Read and transcode audio"
             );
-            time!(compute_mfcc(&mut audio_samples, frame_opts), "Audio mfcc")
+            time!(
+                compute_mfcc(&mut audio_samples, frame_opts).collect::<Vec<_>>(),
+                "Audio mfcc"
+            )
         });
 
         let t_synth = s.spawn(|| {
@@ -139,7 +104,7 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
                 "Synthesize audio"
             );
 
-            let mfcc = compute_mfcc(&mut synth_samples, frame_opts);
+            let mfcc = compute_mfcc(&mut synth_samples, frame_opts).collect::<Vec<_>>();
             let anchors = synth_samples.anchors();
             (anchors, mfcc)
         });
@@ -148,17 +113,6 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
         let (anchors, synth_mfcc) = t_synth.join().unwrap();
         (audio_mfcc, synth_mfcc, anchors)
     });
-
-    // Exact algorithm is faster (and more accurate) for smaller inputs
-    /*
-    let dtw = if false
-    /*n_samples < 2 * DTW_DELTA*/
-    {
-        DtwAlgorithm::Exact(DTWExact)
-    } else {
-        DtwAlgorithm::Striped(DTWStriped::new(DTW_DELTA, Some(DTW_SKIP_PENALTY)))
-    };
-    */
 
     let path = fast_dtw::fast_dtw(&audio_mfcc, &synth_mfcc, Some(100));
     let (real_indices, synth_indices): (Vec<_>, Vec<_>) = path.into_iter().unzip();

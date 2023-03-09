@@ -1,12 +1,11 @@
 #![allow(non_upper_case_globals)]
 
 use core::slice;
-use std::ptr::null_mut;
+
 use std::sync::{Arc, Condvar, Mutex, Once};
 use std::{
     cell::Cell,
     ffi::{c_int, c_short, CStr, CString},
-    time::Duration,
 };
 
 use espeakng_sys::*;
@@ -212,7 +211,7 @@ where
             fragment,
         };
         let language = CString::new("en").unwrap();
-        let mut voice_properties = espeak_VOICE {
+        let _voice_properties = espeak_VOICE {
             name: std::ptr::null(),
             languages: language.as_ptr(),
             identifier: std::ptr::null(),

@@ -290,10 +290,6 @@ pub struct MfccOptions {
     pub n_ceps: usize,
 }
 
-pub struct MfccComputer {
-    feature: Mfcc,
-}
-
 fn hamming_window(len: usize) -> Array1<Float> {
     let a = TWOPI / (len - 1) as Float;
     Array1::from_iter((0..len).map(|i| 0.54 - 0.46 * f32::cos(a * i as f32)))
@@ -304,48 +300,67 @@ pub trait FrameSupplier {
     fn fill_next(&mut self, output: &mut [Float]) -> usize;
 }
 
-impl MfccComputer {
-    pub fn new(feature: Mfcc) -> Self {
-        Self { feature }
+pub fn mfcc<'a, FS>(opts: MfccOptions, frame_supplier: &'a mut FS) -> MfccIter<'a, FS>
+where
+    FS: FrameSupplier,
+{
+    let feature = Mfcc::new(opts);
+    let frame_opts = *feature.frame_options();
+
+    let frame_extractor = FrameExtractor::new(frame_supplier, frame_opts);
+
+    MfccIter::new(feature, frame_extractor)
+}
+fn preemphasize(frame: &mut [Float], opts: &FrameExtractionOpts) {
+    let emph_fact = opts.emphasis_factor;
+    for j in 1..frame.len() {
+        frame[j] -= emph_fact * frame[j - 1];
     }
+    frame[0] -= emph_fact * frame[0];
+}
+pub struct MfccIter<'a, T: FrameSupplier> {
+    feature: Mfcc,
+    window: Array1<Float>,
+    frame_extractor: FrameExtractor<'a, T>,
+    keep_going: bool,
+}
 
-    fn preemphasize(frame: &mut [Float], opts: &FrameExtractionOpts) {
-        let emph_fact = opts.emphasis_factor;
-        for j in 1..frame.len() {
-            frame[j] -= emph_fact * frame[j - 1];
+impl<'a, T: FrameSupplier> MfccIter<'a, T> {
+    fn new(feature: Mfcc, frame_extractor: FrameExtractor<'a, T>) -> Self {
+        let window = hamming_window(feature.frame_options().win_size_padded());
+        Self {
+            feature,
+            window, 
+            frame_extractor,
+            keep_going: true,
         }
-        frame[0] -= emph_fact * frame[0];
     }
+}
 
-    pub fn compute(&mut self, wave: &mut impl FrameSupplier) -> Vec<[f32; 13]> {
-        let n_samples = wave.n_samples_est();
-        let opts = *self.feature.frame_options();
-        let frame_shift = opts.win_shift();
-        let frame_length_padded = self.feature.frame_options().win_size_padded();
-        let num_frames = n_samples / frame_shift + 1;
+impl<T> Iterator for MfccIter<'_, T>
+where
+    T: FrameSupplier,
+{
+    type Item = [Float; 13];
 
-        let mut frame_extractor = FrameExtractor::new(wave, opts);
-        let hamming_window = hamming_window(frame_length_padded);
-        let mut output = Vec::with_capacity(num_frames);
-
-        let mut keep_going = true;
-
-        while keep_going {
-            let frame = match frame_extractor.extract_frame() {
-                std::ops::ControlFlow::Continue(f) => f,
-                std::ops::ControlFlow::Break(f) => {
-                    keep_going = false;
-                    f
-                }
-            };
-            Self::preemphasize(frame, &opts);
-            let mut frame = ArrayViewMut1::from(frame);
-            frame *= &hamming_window;
-
-            output.push([0.; 13]);
-            let feat_view = ArrayViewMut1::from(output.last_mut().unwrap());
-            self.feature.compute(frame.view_mut(), feat_view);
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.keep_going {
+            return None;
         }
-        output
+        let frame = match self.frame_extractor.extract_frame() {
+            std::ops::ControlFlow::Continue(f) => f,
+            std::ops::ControlFlow::Break(f) => {
+                self.keep_going = false;
+                f
+            }
+        };
+        preemphasize(frame, self.feature.frame_options());
+        let mut frame = ArrayViewMut1::from(frame);
+        frame *= &self.window;
+
+        let mut out = [0.; 13];
+        let feat_view = ArrayViewMut1::from(&mut out);
+        self.feature.compute(frame.view_mut(), feat_view);
+        Some(out)
     }
 }

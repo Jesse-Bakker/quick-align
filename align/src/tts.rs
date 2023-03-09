@@ -72,7 +72,7 @@ pub(crate) fn speak_multiple(
     utterances: Vec<String>,
 ) -> Result<StreamingFrameSupplier<impl Iterator<Item = Fragment>>, ()> {
     let es = EspeakNg::new().map_err(|_| ())?;
-    let sample_rate = es.sample_rate();
+    let _sample_rate = es.sample_rate();
     let spoken = es
         .synthesize_multiple(Voice::default(), utterances.into_iter())
         .map_err(|_| ())?;

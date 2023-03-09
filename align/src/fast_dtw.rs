@@ -1,4 +1,4 @@
-use std::{iter, ops::Index};
+use std::ops::Index;
 
 fn coarsen<T>(x: &[T]) -> Vec<T>
 where
@@ -173,7 +173,7 @@ where
     best_path(&cost_matrix)
 }
 
-pub(crate) fn window_chiboe(len_x: usize, len_y: usize, delta: usize) -> Vec<(usize, usize)> {
+pub(crate) fn window_sakoe_chuba(len_x: usize, len_y: usize, delta: usize) -> Vec<(usize, usize)> {
     let (n, m) = (len_x, len_y);
     (0..n)
         .map(|i| {
@@ -188,11 +188,11 @@ pub(crate) fn window_chiboe(len_x: usize, len_y: usize, delta: usize) -> Vec<(us
         })
         .collect()
 }
-pub(crate) fn dtw_chiboe<T>(x: &[T], y: &[T], delta: usize) -> Vec<(usize, usize)>
+pub(crate) fn dtw_sakoe_chuba<T>(x: &[T], y: &[T], delta: usize) -> Vec<(usize, usize)>
 where
     T: Sample,
 {
-    let window = window_chiboe(x.len(), y.len(), delta);
+    let window = window_sakoe_chuba(x.len(), y.len(), delta);
     dtw(x, y, Some(window))
 }
 
@@ -275,30 +275,12 @@ fn best_path(accumulated_cost_matrix: &SparseCostMatrix) -> Vec<(usize, usize)> 
     path
 }
 
-macro_rules! time {
-    ($s:expr, $m:expr) => {{
-        let instant = std::time::Instant::now();
-        let result = $s;
-        eprintln!("{}: {}", $m, instant.elapsed().as_millis());
-        result
-    }};
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Borrow, io::BufRead};
 
-    use espeakng::EspeakNg;
-    use ndarray::{Array2, ArrayView1, ArrayView2};
+    use ndarray::Array2;
 
-    use crate::{
-        audioreader::AudioReader,
-        compute_mfcc,
-        dtw::{DTWExact, Dtw},
-        dtw_striped::DTWStriped,
-        tts::{self, Spoken},
-        PreloadedFrameSupplier,
-    };
+    use crate::dtw::DTWExact;
 
     use super::*;
 
@@ -381,57 +363,6 @@ mod tests {
             &Array2::from(mfcc2.clone()).view().t(),
         );
         dtws.accumulated_cost_matrix(&mut cm);
-        assert_eq!(dtws.best_path(&cm), dtw_chiboe(&mfcc1, &mfcc2, 3));
-    }
-
-    #[test]
-    fn test_sample() {
-        let frame_opts = mfcc::FrameExtractionOpts {
-            sample_freq: 22050,
-            frame_length_ms: crate::MFCC_WINDOW_LENGTH,
-            frame_shift_ms: crate::MFCC_WINDOW_SHIFT,
-            emphasis_factor: 0.97,
-        };
-        let audio_file = "tests/corpus/0.flac";
-        let fragments = std::io::BufReader::new(std::fs::File::open("tests/corpus/0.csv").unwrap())
-            .lines()
-            .map(|l| l.unwrap().split_once(',').unwrap().1.to_owned())
-            .collect::<Vec<_>>();
-        let spoken = tts::speak_multiple(fragments.iter().map(|s| s.as_str()).collect()).unwrap();
-        let float_samples: Vec<f32> = spoken
-            .wav
-            .into_iter()
-            .map(|sample| sample as f32 / u16::MAX as f32)
-            .collect();
-        let synth_frame_supplier = PreloadedFrameSupplier::new(float_samples, frame_opts);
-        let synth_mfcc = compute_mfcc(synth_frame_supplier, frame_opts);
-        let reader = AudioReader::new();
-        let audio_samples = reader
-            .read_and_transcode_file(audio_file, frame_opts)
-            .unwrap();
-        let audio_mfcc = compute_mfcc(audio_samples, frame_opts);
-
-        let window = window_chiboe(audio_mfcc.len(), synth_mfcc.len(), crate::DTW_DELTA);
-        let cost_matrix = cost_matrix(&audio_mfcc, &synth_mfcc, Some(window));
-
-        let sdtw = DTWStriped::new(crate::DTW_DELTA, None);
-        let audio_mfcc_arr = Array2::from(audio_mfcc);
-        let synth_mfcc_arr = Array2::from(synth_mfcc);
-        let (mut striped_cm, c) = sdtw.cost_matrix(&audio_mfcc_arr.view(), &synth_mfcc_arr.view());
-        sdtw.accumulated_cost_matrix(&mut striped_cm, &c);
-        let raw_striped = striped_cm.into_raw_vec();
-
-        for (i, (a, b)) in cost_matrix
-            .cost_matrix
-            .iter()
-            .zip(raw_striped.iter())
-            .enumerate()
-        {
-            if (a - b).abs() > 1e-3 {
-                eprintln!("{i}: {a} - {b}")
-            }
-        }
-        //assert_eq!(cost_matrix.cost_matrix, raw_striped);
-        panic!();
+        assert_eq!(dtws.best_path(&cm), dtw_sakoe_chuba(&mfcc1, &mfcc2, 3));
     }
 }

@@ -10,8 +10,10 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from collections.abc import Collection, Iterable
 from http.client import HTTPResponse
-from typing import List, Optional, Iterable
+from io import BufferedReader
+from typing import Optional
 from urllib import request
 
 try:
@@ -25,13 +27,16 @@ DOWNLOAD_URL: str = "https://www.openslr.org/resources/12/test-clean.tar.gz"
 CORPUS_DIR: pathlib.Path = pathlib.Path(__file__).parent / "tests/corpus"
 
 if HAS_TQDM:
-    ProgressBar = tqdm.tqdm
+
+    class ProgressBar(tqdm.tqdm):
+        pass
+
 else:
 
     class ProgressBar:
         def __init__(
             self,
-            iterable: Optional[Iterable] = None,
+            iterable: Optional[Iterable | Collection] = None,
             total=None,
             desc=None,
             unit: str = "it",
@@ -40,9 +45,11 @@ else:
         ):
             self.iter = iter(iterable) if iterable is not None else None
 
-            try:
-                self.total = total or len(iterable)
-            except AttributeError:
+            if total:
+                self.total = total
+            elif isinstance(iterable, Collection):
+                self.total = len(iterable)
+            else:
                 self.total = None
 
             self.desc = desc
@@ -64,6 +71,9 @@ else:
         def update(self, n=1):
             self.n += n
             self._render()
+
+        def close(self):
+            pass
 
         def _flush(self):
             print("", flush=True)
@@ -87,19 +97,18 @@ class Fragment:
     transcription: str
 
 
-class DownloadProgress(ProgressBar):
+class DownloadProgress(BufferedReader):
     def __init__(self, response, *args, **kwargs):
-        self.response = response
         self.bytes_read = 0
-        super().__init__(total=self.response.length, unit="Byte", *args, **kwargs)
+        self.progress_bar = ProgressBar(
+            total=response.length, unit="Byte", unit_scale=True, *args, **kwargs
+        )
+        super().__init__(response)
 
     def read(self, *args, **kwargs):
-        buf = self.response.read(*args, **kwargs)
-        self.update(len(buf))
+        buf = super().read(*args, **kwargs)
+        self.progress_bar.update(len(buf))
         return buf
-
-    def __getattr__(self, name):
-        getattr(self.response, name)
 
 
 def download_dataset(url: str) -> pathlib.Path:
@@ -111,9 +120,9 @@ def download_dataset(url: str) -> pathlib.Path:
     tmpdir = pathlib.Path(tempfile.mkdtemp(prefix=prefix))
     try:
         resp: HTTPResponse = request.urlopen(req)
-        stream = DownloadProgress(resp, desc="Downloading dataset", unit_scale=True)
+
         # Stream through tar with transparent compression
-        with tarfile.open(fileobj=stream, mode="r|*") as tf:
+        with tarfile.open(fileobj=DownloadProgress(resp), mode="r|*") as tf:
             tf.extractall(path=tmpdir)
     except Exception:
         os.rmdir(tmpdir)
@@ -121,7 +130,7 @@ def download_dataset(url: str) -> pathlib.Path:
     return tmpdir
 
 
-def index_dataset(dir: pathlib.Path) -> List[Fragment]:
+def index_dataset(dir: pathlib.Path) -> list[Fragment]:
     chapters = (dir / "LibriSpeech" / "test-clean").glob("*/*/")
     fragments = []
     for chapter_path in ProgressBar(
@@ -161,7 +170,7 @@ def index_dataset(dir: pathlib.Path) -> List[Fragment]:
 
 
 def create_testset(
-    fragments: List[Fragment], total_duration_hours: int, output_dir: pathlib.Path
+    fragments: list[Fragment], total_duration_hours: int, output_dir: pathlib.Path
 ):
     duration_limit = datetime.timedelta(hours=total_duration_hours)
     total_duration = datetime.timedelta()
@@ -170,13 +179,14 @@ def create_testset(
     )
     for i in itertools.count():
         if total_duration >= duration_limit:
+            progress.close()
             return
 
         audio_file = output_dir / f"{i}.flac"
         transcription_file = output_dir / f"{i}.csv"
 
         k = random.randint(10, min(len(fragments), 300))
-        parts: List[Fragment] = random.sample(fragments, k=k)
+        parts: list[Fragment] = random.sample(fragments, k=k)
         files = "|".join(str(part.path) for part in parts)
         subprocess.run(
             ["ffmpeg", "-i", "concat:" + files, "-c", "copy", str(audio_file)],
@@ -191,7 +201,7 @@ def create_testset(
                 writer.writerow([duration.total_seconds(), part.transcription.strip()])
                 duration += part.duration
             total_duration += duration
-        progress.update(duration)
+        progress.update(duration.total_seconds())
 
 
 def dir_path(string):
