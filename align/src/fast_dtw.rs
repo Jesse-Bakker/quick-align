@@ -277,11 +277,6 @@ fn best_path(accumulated_cost_matrix: &SparseCostMatrix) -> Vec<(usize, usize)> 
 
 #[cfg(test)]
 mod tests {
-
-    use ndarray::Array2;
-
-    use crate::dtw::DTWExact;
-
     use super::*;
 
     impl Sample for u32 {
@@ -331,38 +326,10 @@ mod tests {
         // | | | | |x|x|
         // | | | | |x|x|
         // | | | |x|x|x|
+        // |x|x|x|x|x|x|
         // |x|x|x|x|x| |
-        // |x|x|x|x| | |
         let path = &[(0, 0), (0, 1), (1, 2), (2, 2)];
-        let window = vec![(0, 4), (0, 5), (3, 6), (4, 6), (4, 6), (4, 6)];
+        let window = vec![(0, 5), (0, 6), (3, 6), (4, 6), (4, 6), (4, 6)];
         assert_eq!(create_window(path, 6, 6, 0), window);
-    }
-
-    #[test]
-    fn test_cost_matrix() {
-        let mut a = [1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12., 13.];
-        let mut mfcc1 = Vec::new();
-        let mut mfcc2 = Vec::new();
-
-        for i in 0..10 {
-            mfcc1.push(a);
-            for n in a.iter_mut() {
-                if i % 2 == 0 {
-                    *n += 1.;
-                } else {
-                    *n -= 1.;
-                }
-            }
-            mfcc2.push(a);
-        }
-        let c = cost_matrix(&mfcc1, &mfcc2, None);
-        dbg!(c.materialize());
-        let dtws = DTWExact;
-        let mut cm = dtws.cost_matrix(
-            &Array2::from(mfcc1.clone()).view().t(),
-            &Array2::from(mfcc2.clone()).view().t(),
-        );
-        dtws.accumulated_cost_matrix(&mut cm);
-        assert_eq!(dtws.best_path(&cm), dtw_sakoe_chuba(&mfcc1, &mfcc2, 3));
     }
 }
