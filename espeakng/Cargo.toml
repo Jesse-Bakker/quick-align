@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 espeakng-sys = "0.1.1"
 once_cell = "1.17.1"
+
+# For espeakng-sys
+bindgen = { version = "0.59", default-features = false, features = ["runtime"] }

@@ -65,31 +65,79 @@ fn create_window(
     }
 
     let window = w.window.clone();
-    for (i, (left, right)) in window.into_iter().enumerate() {
-        let left = left.saturating_sub(radius);
-        let right = right.saturating_add(radius).min(len_y);
 
-        w.mark_visited(i, left);
-        w.mark_visited(i, right);
+    let start = path[0];
+    {
+        for i in start.0.saturating_sub(radius)..start.0.saturating_add(radius).min(len_x) {
+            let y = start.1;
+            w.window[i] = (
+                y.saturating_sub(radius),
+                y.saturating_add(radius).min(len_y),
+            );
+        }
     }
+
+    for (i, (left, right)) in window
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (left, right))| right.saturating_sub(*left) != 0)
+    {
+        w.mark_visited(i.saturating_sub(radius), left.saturating_sub(radius));
+        w.mark_visited(
+            i.saturating_add(radius).min(len_x - 1),
+            right.saturating_add(radius).min(len_y - 1),
+        );
+    }
+
     w.window
 }
 
-pub(crate) fn fast_dtw<T>(x: &[T], y: &[T], radius: Option<usize>) -> Vec<(usize, usize)>
+pub fn fast_dtw<T>(
+    x: &[T],
+    y: &[T],
+    radius: Option<usize>,
+    invariance_radius: Option<usize>,
+) -> Vec<(usize, usize)>
 where
     T: Sample + Clone,
 {
+    let invariance_radius = invariance_radius.unwrap_or(0);
     let radius = radius.unwrap_or(0);
+    fast_dtw_impl(x, y, radius, invariance_radius, 1)
+}
+
+fn fast_dtw_impl<T>(
+    x: &[T],
+    y: &[T],
+    radius: usize,
+    invariance_radius: usize,
+    resolution_ratio: usize,
+) -> Vec<(usize, usize)>
+where
+    T: Sample + Clone,
+{
     if x.len() < 2 || y.len() < 2 {
-        return dtw(x, y, None);
+        return dtw(x, y, None, None);
     }
 
     let reduced_x = coarsen(x);
     let reduced_y = coarsen(y);
 
-    let path = fast_dtw(&reduced_x, &reduced_y, Some(radius));
+    let r = if resolution_ratio < 8 {
+        Some(invariance_radius / resolution_ratio)
+    } else {
+        None
+    };
+    let path = fast_dtw_impl(
+        &reduced_x,
+        &reduced_y,
+        radius,
+        invariance_radius,
+        resolution_ratio * 2,
+    );
     let window = create_window(&path, x.len(), y.len(), radius);
-    dtw(x, y, Some(window))
+    //let r = Some(invariance_radius / resolution_ratio);
+    dtw(x, y, Some(window), r)
 }
 
 macro_rules! min {
@@ -135,7 +183,7 @@ impl Index<(usize, usize)> for SparseCostMatrix {
     }
 }
 
-pub(crate) trait Sample: Sized {
+pub trait Sample: Sized {
     fn mean(&self, other: &Self) -> Self;
 
     fn dist(&self, other: &Self) -> f32;
@@ -162,18 +210,26 @@ impl Sample for [f32; 13] {
             .map(|(a, b)| a * b)
             .sum::<f32>();
         (1. - dot / (norm0 * norm1)).abs()
+
+        //self[1..].iter().zip(other[1..].iter()).map(|(a,b)| (a - b).powi(2)).sum()
     }
 }
 
-pub(crate) fn dtw<T>(x: &[T], y: &[T], window: Option<Vec<(usize, usize)>>) -> Vec<(usize, usize)>
+pub fn dtw<T>(
+    x: &[T],
+    y: &[T],
+    window: Option<Vec<(usize, usize)>>,
+    invariance_radius: Option<usize>,
+) -> Vec<(usize, usize)>
 where
     T: Sample,
 {
-    let cost_matrix = cost_matrix(x, y, window);
-    best_path(&cost_matrix)
+    let radius = invariance_radius.unwrap_or(0);
+    let cost_matrix = cost_matrix(x, y, window, radius);
+    best_path(&cost_matrix, radius)
 }
 
-pub(crate) fn window_sakoe_chuba(len_x: usize, len_y: usize, delta: usize) -> Vec<(usize, usize)> {
+pub fn window_sakoe_chuba(len_x: usize, len_y: usize, delta: usize) -> Vec<(usize, usize)> {
     let (n, m) = (len_x, len_y);
     (0..n)
         .map(|i| {
@@ -188,22 +244,24 @@ pub(crate) fn window_sakoe_chuba(len_x: usize, len_y: usize, delta: usize) -> Ve
         })
         .collect()
 }
-pub(crate) fn dtw_sakoe_chuba<T>(x: &[T], y: &[T], delta: usize) -> Vec<(usize, usize)>
+pub fn dtw_sakoe_chuba<T>(x: &[T], y: &[T], delta: usize) -> Vec<(usize, usize)>
 where
     T: Sample,
 {
     let window = window_sakoe_chuba(x.len(), y.len(), delta);
-    dtw(x, y, Some(window))
+    dtw(x, y, Some(window), None)
 }
 
 pub(crate) fn cost_matrix<T>(
     mfcc1: &[T],
     mfcc2: &[T],
     window: Option<Vec<(usize, usize)>>,
+    radius: usize,
 ) -> SparseCostMatrix
 where
     T: Sample,
 {
+    dbg!("cost_matrix");
     let window = window.unwrap_or_else(|| {
         (0..mfcc1.len())
             .map(|_| (0, mfcc2.len()))
@@ -214,7 +272,7 @@ where
         .iter()
         .scan(0, |acc, win| {
             let ret = *acc;
-            *acc += win.1 - win.0;
+            *acc += win.1.saturating_sub(win.0);
             Some(ret)
         })
         .collect();
@@ -228,11 +286,16 @@ where
     };
 
     for ((range_start, range_end), (i, row)) in window.iter().zip(mfcc1.iter().enumerate()) {
+        if range_end.saturating_sub(*range_start) == 0 {
+            continue;
+        }
         for (offset, column) in mfcc2[*range_start..*range_end].iter().enumerate() {
             let j = range_start + offset;
             let dist = row.dist(column);
             let min_prev = match (i, j) {
-                (0, 0) => 0.,
+                // Start point relaxation
+                (0, j) if j <= radius => 0.,
+                (i, 0) if i <= radius => 0.,
                 (0, _) => cost_matrix[(i, j - 1)],
                 (_, 0) => cost_matrix[(i - 1, j)],
                 (_, _) => {
@@ -250,13 +313,30 @@ where
     cost_matrix
 }
 
-fn best_path(accumulated_cost_matrix: &SparseCostMatrix) -> Vec<(usize, usize)> {
+fn best_path(accumulated_cost_matrix: &SparseCostMatrix, radius: usize) -> Vec<(usize, usize)> {
+    dbg!("path");
     let (n, m) = accumulated_cost_matrix.size();
     let mut path = Vec::with_capacity(n + m);
-    let (mut i, mut j) = (n - 1, m - 1);
+    let min_x = (n.saturating_sub(radius + 1)..n)
+        .min_by(|a, b| {
+            accumulated_cost_matrix[(*a, m - 1)].total_cmp(&accumulated_cost_matrix[(*b, m - 1)])
+        })
+        .unwrap();
+    let min_y = (m.saturating_sub(radius + 1)..m)
+        .min_by(|a, b| {
+            accumulated_cost_matrix[(n - 1, *a)].total_cmp(&accumulated_cost_matrix[(n - 1, *b)])
+        })
+        .unwrap();
+
+    let (mut i, mut j) =
+        if accumulated_cost_matrix[(min_x, m - 1)] < accumulated_cost_matrix[(n - 1, min_y)] {
+            (min_x, m - 1)
+        } else {
+            (n - 1, min_y)
+        };
 
     path.push((i, j));
-    while i > 0 || j > 0 {
+    while (i > 0 || j > radius) && (j > 0 || i > radius) {
         let min_move = match (i, j) {
             (0, _) => (i, j - 1),
             (_, 0) => (i - 1, j),
@@ -288,6 +368,15 @@ mod tests {
             (self + other) / 2
         }
     }
+    impl Sample for f32 {
+        fn dist(&self, other: &Self) -> f32 {
+            (self - *other).abs()
+        }
+
+        fn mean(&self, other: &Self) -> Self {
+            (self + other) / 2.
+        }
+    }
 
     #[test]
     fn test_coarsen() {
@@ -300,7 +389,7 @@ mod tests {
     fn test_dtw() {
         let x = &[1, 2, 3];
         let y = &[1, 1, 2, 3, 4];
-        let cost_matrix = cost_matrix(x, y, None);
+        let cost_matrix = cost_matrix(x, y, None, 0);
         assert_eq!(
             &cost_matrix.materialize(),
             &vec![
@@ -309,9 +398,9 @@ mod tests {
                 vec![3., 3., 1., 0., 1.],
             ]
         );
-        let path = best_path(&cost_matrix);
+        let path = best_path(&cost_matrix, 0);
         assert_eq!(path, vec![(0, 0), (0, 1), (1, 2), (2, 3), (2, 4)]);
-        assert_eq!(dtw(x, y, None), fast_dtw(x, y, None));
+        assert_eq!(dtw(x, y, None, None), fast_dtw(x, y, None, None));
     }
 
     #[test]
@@ -326,10 +415,22 @@ mod tests {
         // | | | | |x|x|
         // | | | | |x|x|
         // | | | |x|x|x|
-        // |x|x|x|x|x|x|
-        // |x|x|x|x|x| |
+        // |x|x|x|x|x||
+        // |x|x|x|x|| |
         let path = &[(0, 0), (0, 1), (1, 2), (2, 2)];
-        let window = vec![(0, 5), (0, 6), (3, 6), (4, 6), (4, 6), (4, 6)];
+        let window = vec![(0, 4), (0, 5), (3, 6), (4, 6), (4, 6), (4, 6)];
         assert_eq!(create_window(path, 6, 6, 0), window);
+    }
+
+    #[test]
+    fn test_start_invariant() {
+        let x = [1., 2., 3., 4., 5., 8., 9.];
+        let y = [3., 4., 5., 7., 1., 2., 3., 4., 5.];
+
+        let window = window_sakoe_chuba(x.len(), y.len(), 2);
+        assert_eq!(
+            fast_dtw(&x, &y, Some(2), Some(5)),
+            vec![(4, 0), (5, 1), (6, 2), (7, 3), (8, 4)]
+        );
     }
 }

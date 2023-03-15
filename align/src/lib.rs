@@ -1,14 +1,16 @@
-mod audioreader;
-mod fast_dtw;
+pub mod audioreader;
+pub mod fast_dtw;
 mod tts;
 
 use std::thread;
 
 use audioreader::AudioReader;
+use fast_dtw::{dtw, window_sakoe_chuba};
 use mfcc::{mfcc, FrameExtractionOpts, FrameSupplier, MelBanksOpts, MfccIter, MfccOptions};
 
-const MFCC_WINDOW_SHIFT: f32 = 40. /* milliseconds */;
-const MFCC_WINDOW_LENGTH: f32 = 100. /* milliseconds */;
+const MFCC_WINDOW_SHIFT: f32 = 40.; // milliseconds
+const MFCC_WINDOW_LENGTH: f32 = 100.; // milliseconds
+const SKIP_RATIO: usize = 20; // skip at most a tenth of the start and end of a fragment
 
 fn compute_mfcc<T: FrameSupplier>(
     wave: &mut T,
@@ -112,8 +114,14 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
         (audio_mfcc, synth_mfcc, anchors)
     });
 
-    let path = fast_dtw::fast_dtw(&audio_mfcc, &synth_mfcc, Some(100));
-    let (real_indices, synth_indices): (Vec<_>, Vec<_>) = path.into_iter().unzip();
+    let invariance_radius = audio_mfcc.len() / SKIP_RATIO;
+    //let window = window_sakoe_chuba(audio_mfcc.len(), synth_mfcc.len(), 60_000 / MFCC_WINDOW_LENGTH as usize);
+    //let path = fast_dtw::fast_dtw(&audio_mfcc, &synth_mfcc, Some(100), Some(invariance_radius));
+    let path = fast_dtw::fast_dtw(&audio_mfcc, &synth_mfcc, Some(400), Some(invariance_radius));
+    //let path = dtw(&audio_mfcc, &synth_mfcc, Some(window), Some(50_000 / MFCC_WINDOW_LENGTH as usize));
+    let (real_indices, synth_indices): (Vec<_>, Vec<_>) = path
+        .into_iter() /*.map(|(a, b)| (b, a))*/
+        .unzip();
     let boundaries = find_boundaries(real_indices, synth_indices, anchors);
 
     boundaries

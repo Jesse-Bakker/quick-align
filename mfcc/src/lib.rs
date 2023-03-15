@@ -22,6 +22,7 @@ struct MelBanks {
     bins: Vec<(usize, Array1<Float>)>,
 }
 
+#[derive(Clone, Copy)]
 pub struct MelBanksOpts {
     pub n_bins: usize,
     pub low_freq: Option<freq::Freq>,
@@ -266,11 +267,18 @@ impl<'a, T: FrameSupplier> FrameExtractor<'a, T> {
 
         while filled < len {
             if self.idx >= self.buf_len {
+                let last = (self.buf_len > 0).then(|| self.buf[self.buf_len - 1]);
                 self.buf_len = self.frame_supplier.fill_next(&mut self.buf);
                 self.idx = 0;
                 if self.buf_len == 0 {
                     self.current[filled..].fill(0.);
                     return std::ops::ControlFlow::Break(&mut self.current);
+                }
+                let emph = self.opts.emphasis_factor;
+                let last = last.unwrap_or(self.buf[0]);
+                self.buf[0] -= last * emph;
+                for i in 1..self.buf_len {
+                    self.buf[i] -= self.buf[i - 1] * emph;
                 }
             }
             let from_buf = usize::min(self.buf_len - self.idx, len - filled);
@@ -284,6 +292,7 @@ impl<'a, T: FrameSupplier> FrameExtractor<'a, T> {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct MfccOptions {
     pub mel_opts: MelBanksOpts,
     pub frame_opts: FrameExtractionOpts,
@@ -300,7 +309,7 @@ pub trait FrameSupplier {
     fn fill_next(&mut self, output: &mut [Float]) -> usize;
 }
 
-pub fn mfcc<'a, FS>(opts: MfccOptions, frame_supplier: &'a mut FS) -> MfccIter<'a, FS>
+pub fn mfcc<FS>(opts: MfccOptions, frame_supplier: &mut FS) -> MfccIter<'_, FS>
 where
     FS: FrameSupplier,
 {
@@ -330,7 +339,7 @@ impl<'a, T: FrameSupplier> MfccIter<'a, T> {
         let window = hamming_window(feature.frame_options().win_size_padded());
         Self {
             feature,
-            window, 
+            window,
             frame_extractor,
             keep_going: true,
         }
@@ -354,7 +363,6 @@ where
                 f
             }
         };
-        preemphasize(frame, self.feature.frame_options());
         let mut frame = ArrayViewMut1::from(frame);
         frame *= &self.window;
 

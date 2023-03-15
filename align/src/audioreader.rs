@@ -13,9 +13,9 @@ use std::sync::Once;
 
 static FFMPEG_INITIALIZED: Once = Once::new();
 
-pub(crate) struct AudioReader;
+pub struct AudioReader;
 
-pub(crate) struct StreamingFrameSupplier {
+pub struct StreamingFrameSupplier {
     ctx: Input,
     decoded_frame: frame::Audio,
     resampled_frame: frame::Audio,
@@ -127,7 +127,7 @@ impl FrameSupplier for StreamingFrameSupplier {
 }
 
 impl AudioReader {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         FFMPEG_INITIALIZED.call_once(|| {
             ffmpeg::init().unwrap();
             ffmpeg::log::set_level(ffmpeg::log::Level::Fatal);
@@ -135,7 +135,7 @@ impl AudioReader {
         Self
     }
 
-    pub(crate) fn read_and_transcode_file(
+    pub fn read_and_transcode_file(
         &self,
         filename: &str,
         frame_opts: FrameExtractionOpts,
