@@ -1,5 +1,10 @@
 use std::ops::Index;
 
+pub struct DtwResult {
+    pub path: Vec<(usize, usize)>,
+    pub cost: f32,
+}
+
 fn coarsen<T>(x: &[T]) -> Vec<T>
 where
     T: Sample + Clone,
@@ -75,21 +80,21 @@ fn create_window(
     w.window
 }
 
-pub(crate) fn fast_dtw<T>(x: &[T], y: &[T], radius: Option<usize>) -> Vec<(usize, usize)>
+pub(crate) fn fast_dtw<T>(x: &[T], y: &[T], radius: Option<usize>) -> DtwResult
 where
     T: Sample + Clone,
 {
     let radius = radius.unwrap_or(0);
     if x.len() < 2 || y.len() < 2 {
-        return dtw(x, y, None);
+        return dtw(x, y, None, Psi::default());
     }
 
     let reduced_x = coarsen(x);
     let reduced_y = coarsen(y);
 
-    let path = fast_dtw(&reduced_x, &reduced_y, Some(radius));
-    let window = create_window(&path, x.len(), y.len(), radius);
-    dtw(x, y, Some(window))
+    let res = fast_dtw(&reduced_x, &reduced_y, Some(radius));
+    let window = create_window(&res.path, x.len(), y.len(), radius);
+    dtw(x, y, Some(window), Psi::default())
 }
 
 macro_rules! min {
@@ -165,41 +170,27 @@ impl Sample for [f32; 13] {
     }
 }
 
-pub(crate) fn dtw<T>(x: &[T], y: &[T], window: Option<Vec<(usize, usize)>>) -> Vec<(usize, usize)>
+pub(crate) fn dtw<T>(x: &[T], y: &[T], window: Option<Vec<(usize, usize)>>, psi: Psi) -> DtwResult
 where
     T: Sample,
 {
-    let cost_matrix = cost_matrix(x, y, window);
-    best_path(&cost_matrix)
+    let cost_matrix = cost_matrix(x, y, window, psi);
+    best_path(&cost_matrix, psi)
 }
 
-pub(crate) fn window_sakoe_chuba(len_x: usize, len_y: usize, delta: usize) -> Vec<(usize, usize)> {
-    let (n, m) = (len_x, len_y);
-    (0..n)
-        .map(|i| {
-            let diag_j = (m * i) / n;
-            let range_start = diag_j.saturating_sub(delta / 2);
-            let range_end = range_start + delta;
-            if range_end < m {
-                (range_start, range_end)
-            } else {
-                (m.saturating_sub(delta), m)
-            }
-        })
-        .collect()
-}
-pub(crate) fn dtw_sakoe_chuba<T>(x: &[T], y: &[T], delta: usize) -> Vec<(usize, usize)>
-where
-    T: Sample,
-{
-    let window = window_sakoe_chuba(x.len(), y.len(), delta);
-    dtw(x, y, Some(window))
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Psi {
+    a_start: usize,
+    a_end: usize,
+    b_start: usize,
+    b_end: usize,
 }
 
 pub(crate) fn cost_matrix<T>(
     mfcc1: &[T],
     mfcc2: &[T],
     window: Option<Vec<(usize, usize)>>,
+    psi: Psi,
 ) -> SparseCostMatrix
 where
     T: Sample,
@@ -233,7 +224,9 @@ where
             let dist = row.dist(column);
             let min_prev = match (i, j) {
                 (0, 0) => 0.,
+                (0, j) if j < psi.b_start => dist,
                 (0, _) => cost_matrix[(i, j - 1)],
+                (i, 0) if i < psi.a_start => dist,
                 (_, 0) => cost_matrix[(i - 1, j)],
                 (_, _) => {
                     min!(
@@ -250,10 +243,27 @@ where
     cost_matrix
 }
 
-fn best_path(accumulated_cost_matrix: &SparseCostMatrix) -> Vec<(usize, usize)> {
+fn best_path(accumulated_cost_matrix: &SparseCostMatrix, psi: Psi) -> DtwResult {
     let (n, m) = accumulated_cost_matrix.size();
     let mut path = Vec::with_capacity(n + m);
-    let (mut i, mut j) = (n - 1, m - 1);
+    let i_min = ((n - psi.a_end)..n)
+        .min_by(|&a, &b| {
+            accumulated_cost_matrix[(a, m - 1)].total_cmp(&accumulated_cost_matrix[(b, m - 1)])
+        })
+        .unwrap_or(n - 1);
+
+    let j_min = ((m - psi.b_end)..m)
+        .min_by(|&a, &b| {
+            accumulated_cost_matrix[(m - 1, a)].total_cmp(&accumulated_cost_matrix[(m - 1, b)])
+        })
+        .unwrap_or(m - 1);
+
+    let (mut i, mut j) = [(i_min, m - 1), (n - 1, j_min)]
+        .into_iter()
+        .min_by(|&a, &b| accumulated_cost_matrix[a].total_cmp(&accumulated_cost_matrix[b]))
+        .unwrap();
+
+    let cost = accumulated_cost_matrix[(i, j)];
 
     path.push((i, j));
     while i > 0 || j > 0 {
@@ -272,15 +282,11 @@ fn best_path(accumulated_cost_matrix: &SparseCostMatrix) -> Vec<(usize, usize)> 
     }
     path.shrink_to_fit();
     path.reverse();
-    path
+    DtwResult { path, cost }
 }
 
 #[cfg(test)]
 mod tests {
-
-    use ndarray::Array2;
-
-    use crate::dtw::DTWExact;
 
     use super::*;
 
@@ -305,7 +311,7 @@ mod tests {
     fn test_dtw() {
         let x = &[1, 2, 3];
         let y = &[1, 1, 2, 3, 4];
-        let cost_matrix = cost_matrix(x, y, None);
+        let cost_matrix = cost_matrix(x, y, None, Psi::default());
         assert_eq!(
             &cost_matrix.materialize(),
             &vec![
@@ -314,9 +320,12 @@ mod tests {
                 vec![3., 3., 1., 0., 1.],
             ]
         );
-        let path = best_path(&cost_matrix);
-        assert_eq!(path, vec![(0, 0), (0, 1), (1, 2), (2, 3), (2, 4)]);
-        assert_eq!(dtw(x, y, None), fast_dtw(x, y, None));
+        let res = best_path(&cost_matrix, Psi::default());
+        assert_eq!(res.path, vec![(0, 0), (0, 1), (1, 2), (2, 3), (2, 4)]);
+        assert_eq!(
+            dtw(x, y, None, Psi::default()).path,
+            fast_dtw(x, y, None).path
+        );
     }
 
     #[test]
@@ -336,33 +345,5 @@ mod tests {
         let path = &[(0, 0), (0, 1), (1, 2), (2, 2)];
         let window = vec![(0, 4), (0, 5), (3, 6), (4, 6), (4, 6), (4, 6)];
         assert_eq!(create_window(path, 6, 6, 0), window);
-    }
-
-    #[test]
-    fn test_cost_matrix() {
-        let mut a = [1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12., 13.];
-        let mut mfcc1 = Vec::new();
-        let mut mfcc2 = Vec::new();
-
-        for i in 0..10 {
-            mfcc1.push(a);
-            for n in a.iter_mut() {
-                if i % 2 == 0 {
-                    *n += 1.;
-                } else {
-                    *n -= 1.;
-                }
-            }
-            mfcc2.push(a);
-        }
-        let c = cost_matrix(&mfcc1, &mfcc2, None);
-        dbg!(c.materialize());
-        let dtws = DTWExact;
-        let mut cm = dtws.cost_matrix(
-            &Array2::from(mfcc1.clone()).view().t(),
-            &Array2::from(mfcc2.clone()).view().t(),
-        );
-        dtws.accumulated_cost_matrix(&mut cm);
-        assert_eq!(dtws.best_path(&cm), dtw_sakoe_chuba(&mfcc1, &mfcc2, 3));
     }
 }

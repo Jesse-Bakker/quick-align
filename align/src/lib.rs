@@ -6,11 +6,72 @@ mod tts;
 
 use std::thread;
 
-use audioreader::AudioReader;
+pub use audioreader::AudioReader;
 use mfcc::{mfcc, FrameExtractionOpts, FrameSupplier, MelBanksOpts, MfccIter, MfccOptions};
 
 const MFCC_WINDOW_SHIFT: f32 = 40. /* milliseconds */;
 const MFCC_WINDOW_LENGTH: f32 = 100. /* milliseconds */;
+
+const SILENCE_MIN_LENGTH: f32 = 0.2 /* seconds */;
+const SILENCE_MAX_ENERGY: f32 = 0.699; // log10(5)
+const START_DETECTION_DURATION: f32 = 3. /* seconds */;
+
+struct Silences<I>
+where
+    I: Iterator<Item = (usize, [f32; 13])>,
+{
+    inner: I,
+    current_silence: Option<(usize, usize)>,
+    minimum_length: usize,
+    max_energy: f32,
+}
+
+impl<I> Iterator for Silences<I>
+where
+    I: Iterator<Item = (usize, [f32; 13])>,
+{
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        const MIN_ENERGY: f32 = -11.512_925; // ln(0.0001)
+        loop {
+            let (index, mfcc) = self.inner.next()?;
+            match (
+                self.current_silence,
+                MIN_ENERGY.max(mfcc[0]) < MIN_ENERGY + self.max_energy,
+            ) {
+                (Some((start, _)), true) => {
+                    self.current_silence = Some((start, index));
+                }
+                (Some(interval @ (start, end)), false) => {
+                    self.current_silence = None;
+                    if end - start > self.minimum_length {
+                        return Some(interval);
+                    }
+                }
+                (None, true) => {
+                    self.current_silence = Some((index, index));
+                }
+                (None, false) => {
+                    continue;
+                }
+            }
+        }
+    }
+}
+
+pub fn silences(
+    mfcc: impl Iterator<Item = [f32; 13]>,
+    minimum_length: usize,
+    max_energy: f32,
+) -> impl Iterator<Item = (usize, usize)> {
+    Silences {
+        inner: mfcc.enumerate(),
+        current_silence: None,
+        minimum_length,
+        max_energy,
+    }
+}
 
 fn compute_mfcc<T: FrameSupplier>(
     wave: &mut T,
@@ -76,6 +137,26 @@ macro_rules! time {
     }};
 }
 
+fn find_start_end(audio_mfcc: &[[f32; 13]], synth_mfcc: &[[f32; 13]]) {
+    const SILENCE_MIN_FRAMES: usize = (SILENCE_MIN_LENGTH / (MFCC_WINDOW_SHIFT / 1000.)) as usize;
+    const START_DETECTION_FRAMES: usize =
+        (START_DETECTION_DURATION / (MFCC_WINDOW_SHIFT / 1000.)) as usize;
+    let silences = silences(
+        audio_mfcc.iter().copied(),
+        SILENCE_MIN_FRAMES,
+        SILENCE_MAX_ENERGY,
+    );
+
+    let synth_frames = &synth_mfcc[0..START_DETECTION_FRAMES];
+
+    let best_start = 0;
+    for silence in silences {
+        // TODO: Match synth frames from end of silence to START_DETECTION_FRAMES * 1.5 with
+        // START_DETECTION FRAMES psi_end. That way, it can end between 0.5 and 1.5 times
+        // the speech duration to make up for differences in talking speed.
+    }
+}
+
 pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
     let frame_opts = FrameExtractionOpts {
         sample_freq: 22050,
@@ -114,8 +195,8 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
         (audio_mfcc, synth_mfcc, anchors)
     });
 
-    let path = fast_dtw::fast_dtw(&audio_mfcc, &synth_mfcc, Some(100));
-    let (real_indices, synth_indices): (Vec<_>, Vec<_>) = path.into_iter().unzip();
+    let res = fast_dtw::fast_dtw(&audio_mfcc, &synth_mfcc, Some(100));
+    let (real_indices, synth_indices): (Vec<_>, Vec<_>) = res.path.into_iter().unzip();
     let boundaries = find_boundaries(real_indices, synth_indices, anchors);
 
     boundaries
