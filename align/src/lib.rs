@@ -1,20 +1,43 @@
 mod audioreader;
 mod dtw;
-mod dtw_striped;
-mod fast_dtw;
 mod tts;
 
-use std::thread;
+use std::{iter, thread};
 
 pub use audioreader::AudioReader;
-use mfcc::{mfcc, FrameExtractionOpts, FrameSupplier, MelBanksOpts, MfccIter, MfccOptions};
+use mfcc::{mfcc, FrameExtractionOpts, FrameSupplier, MelBanksOpts, MfccOptions};
+
+use crate::dtw::find_subsequence;
 
 const MFCC_WINDOW_SHIFT: f32 = 40. /* milliseconds */;
 const MFCC_WINDOW_LENGTH: f32 = 100. /* milliseconds */;
 
-const SILENCE_MIN_LENGTH: f32 = 0.2 /* seconds */;
+const SILENCE_MIN_LENGTH: f32 = 0.6 /* seconds */;
 const SILENCE_MAX_ENERGY: f32 = 0.699; // log10(5)
-const START_DETECTION_DURATION: f32 = 3. /* seconds */;
+const START_DETECTION_MAX_SKIP: f32 = 60. /* seconds */;
+const CMN_WINDOW: f32 = 3000. /* milliseconds */;
+
+#[derive(PartialEq)]
+struct CmpF32(f32);
+
+impl Eq for CmpF32 {}
+
+impl PartialOrd for CmpF32 {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+impl Ord for CmpF32 {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+impl From<f32> for CmpF32 {
+    fn from(value: f32) -> Self {
+        Self(value)
+    }
+}
 
 struct Silences<I>
 where
@@ -73,11 +96,50 @@ pub fn silences(
     }
 }
 
-fn compute_mfcc<T: FrameSupplier>(
-    wave: &mut T,
-    frame_opts: FrameExtractionOpts,
-) -> MfccIter<'_, T> {
-    mfcc(
+fn normalize_mfcc(window: usize, mfcc: &[[f32; 13]]) -> Vec<[f32; 13]> {
+    let n_frames = mfcc.len();
+    let mut last_window = None;
+    let mut cur_sum = [0.; 13];
+
+    let mut out = Vec::with_capacity(mfcc.len());
+    for t in 0..n_frames {
+        let (window_start, window_end) = if t < (window / 2) {
+            (0, window.min(n_frames))
+        } else {
+            let end = (t + (window / 2)).min(n_frames);
+            (end.saturating_sub(window), end)
+        };
+        if let Some((last_window_start, last_window_end)) = last_window {
+            if window_start > last_window_start {
+                for (s, v) in iter::zip(cur_sum.iter_mut(), mfcc[last_window_start].iter()) {
+                    *s -= v;
+                }
+            }
+            if window_end > last_window_end {
+                for (s, v) in iter::zip(cur_sum.iter_mut(), mfcc[last_window_end].iter()) {
+                    *s += v;
+                }
+            }
+        } else {
+            for row in &mfcc[window_start..window_end] {
+                for (s, v) in iter::zip(cur_sum.iter_mut(), row.iter()) {
+                    *s += v;
+                }
+            }
+        }
+        last_window = Some((window_start, window_end));
+        let window_frames = window_end - window_start;
+        let mut out_frame = mfcc[t];
+        for (v, s) in iter::zip(out_frame.iter_mut(), cur_sum) {
+            *v -= s / window_frames as f32;
+        }
+        out.push(out_frame);
+    }
+    out
+}
+
+fn compute_mfcc<T: FrameSupplier>(wave: &mut T, frame_opts: FrameExtractionOpts) -> Vec<[f32; 13]> {
+    let m: Vec<_> = mfcc(
         MfccOptions {
             mel_opts: MelBanksOpts {
                 n_bins: 40,
@@ -89,6 +151,8 @@ fn compute_mfcc<T: FrameSupplier>(
         },
         wave,
     )
+    .collect();
+    m
 }
 
 fn search_sorted_right(a: Vec<usize>, v: impl ExactSizeIterator<Item = usize>) -> Vec<usize> {
@@ -97,7 +161,7 @@ fn search_sorted_right(a: Vec<usize>, v: impl ExactSizeIterator<Item = usize>) -
     for val in v {
         while i < a.len() {
             if (i == 0 || a[i - 1] <= val) && val < a[i] {
-                ret.push(i + 1);
+                ret.push(i);
                 break;
             }
             i += 1;
@@ -137,24 +201,41 @@ macro_rules! time {
     }};
 }
 
-fn find_start_end(audio_mfcc: &[[f32; 13]], synth_mfcc: &[[f32; 13]]) {
+pub fn find_start(audio_mfcc: &[[f32; 13]], synth_mfcc: &[[f32; 13]]) -> usize {
     const SILENCE_MIN_FRAMES: usize = (SILENCE_MIN_LENGTH / (MFCC_WINDOW_SHIFT / 1000.)) as usize;
-    const START_DETECTION_FRAMES: usize =
-        (START_DETECTION_DURATION / (MFCC_WINDOW_SHIFT / 1000.)) as usize;
+    const START_DETECTION_MAX_SKIP_FRAMES: usize =
+        (START_DETECTION_MAX_SKIP / (MFCC_WINDOW_SHIFT / 1000.)) as usize;
+    let start_detection_synth_frames: usize =
+        (8 * START_DETECTION_MAX_SKIP_FRAMES).min(synth_mfcc.len());
     let silences = silences(
         audio_mfcc.iter().copied(),
         SILENCE_MIN_FRAMES,
         SILENCE_MAX_ENERGY,
     );
+    let candidates: Vec<usize> = std::iter::once((0, 0))
+        .chain(silences)
+        .map(|(_, end)| end)
+        .take_while(|&end| end < START_DETECTION_MAX_SKIP_FRAMES)
+        .collect();
+    let Some(last) = candidates.last() else {
+        return 0;
+    };
 
-    let synth_frames = &synth_mfcc[0..START_DETECTION_FRAMES];
+    let len_ratio = audio_mfcc.len() as f64 / synth_mfcc.len() as f64;
+    let max_start_detection_audio_frames =
+        (1.3 * len_ratio * start_detection_synth_frames as f64) as usize;
+    let max_start_detection_audio_frames =
+        max_start_detection_audio_frames.min(audio_mfcc.len() - last);
+    let min_start_detection_audio_frames = (0.8 * max_start_detection_audio_frames as f64) as usize;
+    let psi = max_start_detection_audio_frames - min_start_detection_audio_frames;
 
-    let best_start = 0;
-    for silence in silences {
-        // TODO: Match synth frames from end of silence to START_DETECTION_FRAMES * 1.5 with
-        // START_DETECTION FRAMES psi_end. That way, it can end between 0.5 and 1.5 times
-        // the speech duration to make up for differences in talking speed.
-    }
+    let synth_frames = &synth_mfcc[0..start_detection_synth_frames];
+
+    let candidate_samples = candidates
+        .iter()
+        .map(|&start| &audio_mfcc[start..(start + max_start_detection_audio_frames)]);
+    let (start, _cost) = find_subsequence(synth_frames, candidate_samples, psi);
+    candidates[start]
 }
 
 pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
@@ -173,10 +254,7 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
                     .unwrap(),
                 "Read and transcode audio"
             );
-            time!(
-                compute_mfcc(&mut audio_samples, frame_opts).collect::<Vec<_>>(),
-                "Audio mfcc"
-            )
+            time!(compute_mfcc(&mut audio_samples, frame_opts), "Audio mfcc")
         });
 
         let t_synth = s.spawn(|| {
@@ -185,7 +263,7 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
                 "Synthesize audio"
             );
 
-            let mfcc = compute_mfcc(&mut synth_samples, frame_opts).collect::<Vec<_>>();
+            let mfcc = compute_mfcc(&mut synth_samples, frame_opts);
             let anchors = synth_samples.anchors();
             (anchors, mfcc)
         });
@@ -195,12 +273,14 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
         (audio_mfcc, synth_mfcc, anchors)
     });
 
-    let res = fast_dtw::fast_dtw(&audio_mfcc, &synth_mfcc, Some(100));
+    let start = find_start(&audio_mfcc, &synth_mfcc);
+    let res = dtw::fastdtw::fast_dtw(&audio_mfcc[start..], &synth_mfcc, Some(100));
     let (real_indices, synth_indices): (Vec<_>, Vec<_>) = res.path.into_iter().unzip();
     let boundaries = find_boundaries(real_indices, synth_indices, anchors);
 
     boundaries
         .into_iter()
+        .map(|index| index + start)
         .map(|index| index as f32 * MFCC_WINDOW_SHIFT / 1000.0)
         .collect::<Vec<_>>()
 }
