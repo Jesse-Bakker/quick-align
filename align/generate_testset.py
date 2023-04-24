@@ -130,47 +130,48 @@ def download_dataset(url: str) -> pathlib.Path:
     return tmpdir
 
 
-def index_dataset(dir: pathlib.Path) -> list[Fragment]:
-    chapters = (dir / "LibriSpeech" / "test-clean").glob("*/*/")
+def index_dataset(dir: pathlib.Path) -> list[list[Fragment]]:
+    readers = (dir / "LibriSpeech" / "test-clean").iterdir()
     fragments = []
-    for chapter_path in ProgressBar(
-        list(chapters), desc="Indexing dataset", unit="chapter"
+    for reader in ProgressBar(
+        list(readers), desc="Indexing dataset", unit="chapter"
     ):
-        chapter_path = pathlib.Path(chapter_path)
-        book, chap = chapter_path.parts[-2:]
-        trans = chapter_path / f"{book}-{chap}.trans.txt"
-        with trans.open() as trans_f:
-            for line in trans_f:
-                name, text = line.split(" ", maxsplit=1)
-                path = chapter_path / (name + ".flac")
-                ffprobe = subprocess.run(
-                    [
-                        "ffprobe",
-                        "-v",
-                        "error",
-                        "-show_entries",
-                        "format=duration",
-                        "-of",
-                        "default=noprint_wrappers=1:nokey=1",
-                        path,
-                    ],
-                    capture_output=True,
-                    encoding="ascii",
-                    check=True,
-                )
-                duration = float(ffprobe.stdout.splitlines()[0])
-                fragments.append(
-                    Fragment(
-                        path=path,
-                        transcription=text,
-                        duration=datetime.timedelta(seconds=duration),
+        reader_fragments = []
+        for chapter in reader.iterdir():
+            trans = chapter / f"{reader.stem}-{chapter.stem}.trans.txt"
+            with trans.open() as trans_f:
+                for line in trans_f:
+                    name, text = line.split(" ", maxsplit=1)
+                    path = chapter / (name + ".flac")
+                    ffprobe = subprocess.run(
+                        [
+                            "ffprobe",
+                            "-v",
+                            "error",
+                            "-show_entries",
+                            "format=duration",
+                            "-of",
+                            "default=noprint_wrappers=1:nokey=1",
+                            path,
+                        ],
+                        capture_output=True,
+                        encoding="ascii",
+                        check=True,
                     )
-                )
+                    duration = float(ffprobe.stdout.splitlines()[0])
+                    reader_fragments.append(
+                        Fragment(
+                            path=path,
+                            transcription=text,
+                            duration=datetime.timedelta(seconds=duration),
+                        )
+                    )
+        fragments.append(reader_fragments)
     return fragments
 
 
 def create_testset(
-    fragments: list[Fragment], total_duration_hours: int, output_dir: pathlib.Path
+    fragments: list[list[Fragment]], total_duration_hours: int, output_dir: pathlib.Path
 ):
     duration_limit = datetime.timedelta(hours=total_duration_hours)
     total_duration = datetime.timedelta()
@@ -185,8 +186,9 @@ def create_testset(
         audio_file = output_dir / f"{i}.flac"
         transcription_file = output_dir / f"{i}.csv"
 
-        k = random.randint(10, min(len(fragments), 300))
-        parts: list[Fragment] = random.sample(fragments, k=k)
+        reader = random.choice(fragments)
+        k = random.randint(10, min(len(reader), 300))
+        parts: list[Fragment] = random.sample(reader, k=k)
         files = "|".join(str(part.path) for part in parts)
         subprocess.run(
             ["ffmpeg", "-i", "concat:" + files, "-c", "copy", str(audio_file)],
@@ -194,11 +196,14 @@ def create_testset(
             stderr=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
         )
+
+        prefix_duration = datetime.timedelta(seconds=random.random() * 60)
         with open(transcription_file, "w") as f:
             writer = csv.writer(f)
             duration = datetime.timedelta()
             for part in parts:
-                writer.writerow([duration.total_seconds(), part.transcription.strip()])
+                if duration > prefix_duration:
+                    writer.writerow([duration.total_seconds(), part.transcription.strip()])
                 duration += part.duration
             total_duration += duration
         progress.update(duration.total_seconds())
