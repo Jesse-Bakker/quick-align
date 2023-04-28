@@ -56,7 +56,7 @@ pub(crate) fn expand_window(
         let right = right.saturating_add(radius).min(len_y);
 
         w.mark_visited(i, left);
-        w.mark_visited(i, right);
+        w.mark_visited(i, right - 1);
     }
     w.window
 }

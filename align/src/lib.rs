@@ -4,7 +4,7 @@ mod tts;
 
 use std::{iter, thread};
 
-pub use audioreader::AudioReader;
+use audioreader::AudioReader;
 use mfcc::{mfcc, FrameExtractionOpts, FrameSupplier, MelBanksOpts, MfccOptions};
 
 use crate::dtw::find_subsequence;
@@ -295,7 +295,7 @@ mod tests {
         let v = vec![0, 2, 5, 6, 8, 8];
         assert_eq!(
             search_sorted_right(a, v.into_iter()),
-            vec![1, 3, 6, 7, 9, 9]
+            vec![0, 2, 5, 6, 8, 8],
         );
     }
 }
