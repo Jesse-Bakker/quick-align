@@ -1,5 +1,6 @@
 use align::align;
 use std::{io::BufRead, path::Path, time::Instant};
+
 fn main() {
     const CORPUS_DIR: &str = "tests/corpus";
     let files = (0..)

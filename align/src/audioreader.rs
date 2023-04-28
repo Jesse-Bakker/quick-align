@@ -184,3 +184,9 @@ impl AudioReader {
         ))
     }
 }
+
+impl Default for AudioReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}

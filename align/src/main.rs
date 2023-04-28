@@ -20,7 +20,11 @@ where
     let mut contents = String::new();
     file.read_to_string(&mut contents).unwrap();
 
-    contents.lines().map(|s| s.to_owned()).collect()
+    contents
+        .lines()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn main() {
@@ -29,7 +33,7 @@ fn main() {
     let text_file = args.text_file;
     let fragments = extract_fragments(&text_file);
     let time_boundaries = align(&audio_file, &fragments);
-    for boundary in time_boundaries {
-        print!("{boundary}, ")
+    for (boundary, fragment) in time_boundaries.iter().zip(fragments) {
+        println!("{boundary} - {fragment}")
     }
 }

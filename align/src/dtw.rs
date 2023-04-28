@@ -225,7 +225,10 @@ where
         pruning_point = next_pruning_point;
     }
 
-    costs[costs.len() - psi..].iter().copied().min_by_key(|cost|CmpF32::from(*cost))
+    costs[costs.len() - psi..]
+        .iter()
+        .copied()
+        .min_by_key(|cost| CmpF32::from(*cost))
 }
 
 pub(crate) fn cost_matrix<T>(

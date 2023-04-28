@@ -300,7 +300,7 @@ pub trait FrameSupplier {
     fn fill_next(&mut self, output: &mut [Float]) -> usize;
 }
 
-pub fn mfcc<'a, FS>(opts: MfccOptions, frame_supplier: &'a mut FS) -> MfccIter<'a, FS>
+pub fn mfcc<FS>(opts: MfccOptions, frame_supplier: &mut FS) -> MfccIter<'_, FS>
 where
     FS: FrameSupplier,
 {
