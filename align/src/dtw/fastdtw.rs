@@ -4,8 +4,8 @@ use super::dtw;
 
 use super::DtwResult;
 
-use super::Sample;
 use super::window::Window;
+use super::Sample;
 
 pub(crate) fn coarsen<T>(x: &[T]) -> Vec<T>
 where
@@ -80,7 +80,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::dtw::{cost_matrix, best_path};
+    use crate::dtw::{best_path, cost_matrix, SparseCostMatrix};
 
     use super::*;
 
@@ -101,13 +101,19 @@ mod tests {
         assert_eq!(coarsen(fine), coarse);
     }
 
+    fn materialize(m: &SparseCostMatrix) -> Vec<Vec<f32>> {
+        (0..m.size().0)
+            .map(|i| (0..m.size().1).map(|j| m[(i, j)]).collect())
+            .collect()
+    }
+
     #[test]
     fn test_dtw() {
         let x = &[1, 2, 3];
         let y = &[1, 1, 2, 3, 4];
         let cost_matrix = cost_matrix(x, y, None, Psi::default());
         assert_eq!(
-            &cost_matrix.materialize(),
+            &materialize(&cost_matrix),
             &vec![
                 vec![0., 0., 1., 3., 6.,],
                 vec![1., 1., 0., 1., 3.,],

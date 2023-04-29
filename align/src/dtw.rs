@@ -32,11 +32,6 @@ impl SparseCostMatrix {
         self.size
     }
 
-    fn materialize(&self) -> Vec<Vec<f32>> {
-        (0..self.size().0)
-            .map(|i| (0..self.size().1).map(|j| self[(i, j)]).collect())
-            .collect()
-    }
 }
 
 impl Index<(usize, usize)> for SparseCostMatrix {
@@ -72,14 +67,21 @@ impl Sample for [f32; 13] {
         // Inner product distance (this)
         // or
         // Euclidean distance
-        let norm0 = self[1..].iter().map(|x| x * x).sum::<f32>().sqrt();
-        let norm1 = other[1..].iter().map(|x| x * x).sum::<f32>().sqrt();
-        let dot = self[1..]
+
+        //let norm0 = self[1..].iter().map(|x| x * x).sum::<f32>().sqrt();
+        //let norm1 = other[1..].iter().map(|x| x * x).sum::<f32>().sqrt();
+
+        //let dot = self[1..]
+        //    .iter()
+        //    .zip(other[1..].iter())
+        //    .map(|(a, b)| a * b)
+        //    .sum::<f32>();
+        //(1. - dot / (norm0 * norm1)).abs()
+        self[1..]
             .iter()
             .zip(other[1..].iter())
-            .map(|(a, b)| a * b)
-            .sum::<f32>();
-        (1. - dot / (norm0 * norm1)).abs()
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum()
     }
 }
 
@@ -91,26 +93,17 @@ where
     best_path(&cost_matrix, psi)
 }
 
-pub(crate) fn cost<T: Sample>(
-    x: &[T],
-    y: &[T],
-    window: Option<Vec<(usize, usize)>>,
-    psi_: Psi,
-) -> f32 {
-    let cost_matrix = cost_matrix(x, y, window, psi_);
-    let result = psi(&cost_matrix, psi_);
-    result.cost
-}
-
-pub(crate) fn find_subsequence<'a, T: Sample + 'a>(
-    needle: &[T],
-    haystack: impl Iterator<Item = &'a [T]>,
+pub(crate) fn find_subsequence<'a>(
+    needle: &[[f32; 13]],
+    haystack: impl Iterator<Item = &'a [[f32; 13]]>,
     psi: usize,
 ) -> (usize, f32) {
+    //let radius: usize = needle.len() / 2;
+    let radius: usize = (3 * psi) / 2;
+    // Calculate bound using only guaranteed part of needle
     haystack
         .scan(f32::INFINITY, |ub, series| {
-            println!("{ub}");
-            let new_cost = cost_eapruned(series, needle, *ub, psi).unwrap_or(f32::INFINITY);
+            let new_cost = cost_eapruned(series, needle, *ub, psi, radius);
             *ub = ub.min(new_cost);
             Some(new_cost)
         })
@@ -127,10 +120,17 @@ pub(crate) struct Psi {
     pub(crate) b_end: usize,
 }
 
-pub(crate) fn cost_eapruned<T>(mfcc1: &[T], mfcc2: &[T], ub: f32, psi: usize) -> Option<f32>
+pub(crate) fn cost_eapruned<T>(
+    mfcc1: &[T],
+    mfcc2: &[T],
+    bsf: f32,
+    psi: usize,
+    radius: usize,
+) -> f32
 where
     T: Sample,
 {
+    let ub = bsf;
     let (co, li) = if mfcc1.len() < mfcc2.len() {
         (mfcc1, mfcc2)
     } else {
@@ -148,10 +148,14 @@ where
     for i in 0..li.len() {
         std::mem::swap(&mut c, &mut p);
 
-        let x = &li[i];
+        let li = &li[i];
 
-        let j_stop = co.len();
-        let j_start = 0;
+        let j_stop = if radius < co.len() && i + 1 < co.len() - radius {
+            i + radius + 1
+        } else {
+            co.len()
+        };
+        let j_start = (if i > radius { i - radius } else { 0 }).max(next_start);
         let mut next_pruning_point = j_start;
         let mut j = j_start;
         next_start = j_start;
@@ -163,7 +167,7 @@ where
 
         // Compute DTW up to the pruning point while advancing next_start: diag and top
         while j == next_start && j < pruning_point {
-            let d = Sample::dist(x, &co[j]);
+            let d = Sample::dist(li, &co[j]);
             cost = f32::min(buffers[p + j - 1], buffers[p + j]) + d;
             buffers[c + j] = cost;
             if cost <= ub {
@@ -176,7 +180,7 @@ where
 
         // Compute DTW up to the pruning point without advancing next_start: prev, diag, top
         while j < pruning_point {
-            let d = Sample::dist(x, &co[j]);
+            let d = Sample::dist(li, &co[j]);
             cost = min!(cost, buffers[p + j - 1], buffers[p + j]) + d;
             buffers[c + j] = cost;
             if cost <= ub {
@@ -187,7 +191,7 @@ where
 
         // Compute DTW at pruning point
         if j < j_stop {
-            let d = Sample::dist(x, &co[j]);
+            let d = Sample::dist(li, &co[j]);
             if j == next_start {
                 // Advancing next start: only diag. Done if v>UB.
                 cost = buffers[p + j - 1] + d;
@@ -206,12 +210,12 @@ where
             }
             j += 1;
         } else if j == next_start {
-            return None;
+            break;
         }
 
         // Compute DTW after pruning point: prev. Go on while we advance the next pruning point
         while j == next_pruning_point && j < j_stop {
-            let d = Sample::dist(x, &co[j]);
+            let d = Sample::dist(li, &co[j]);
             cost += d;
             buffers[c + j] = cost;
             if cost <= ub {
@@ -219,16 +223,22 @@ where
             }
             j += 1;
         }
-        if j == j_stop {
+
+        if j == co.len() {
             costs[i] = cost;
         }
         pruning_point = next_pruning_point;
+        /*
+        if i + radius + 1 < co.len() - psi {
+            ub = bsf - cb[i + radius + 1];
+        }
+        */
     }
 
     costs[costs.len() - psi..]
         .iter()
         .copied()
-        .min_by_key(|cost| CmpF32::from(*cost))
+        .min_by_key(|cost| CmpF32::from(*cost)).unwrap()
 }
 
 pub(crate) fn cost_matrix<T>(

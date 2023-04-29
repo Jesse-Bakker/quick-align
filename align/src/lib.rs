@@ -152,6 +152,7 @@ fn compute_mfcc<T: FrameSupplier>(wave: &mut T, frame_opts: FrameExtractionOpts)
         wave,
     )
     .collect();
+    //normalize_mfcc(300, &m)
     m
 }
 
@@ -206,7 +207,7 @@ pub fn find_start(audio_mfcc: &[[f32; 13]], synth_mfcc: &[[f32; 13]]) -> usize {
     const START_DETECTION_MAX_SKIP_FRAMES: usize =
         (START_DETECTION_MAX_SKIP / (MFCC_WINDOW_SHIFT / 1000.)) as usize;
     let start_detection_synth_frames: usize =
-        (8 * START_DETECTION_MAX_SKIP_FRAMES).min(synth_mfcc.len());
+        (3 * START_DETECTION_MAX_SKIP_FRAMES).min(synth_mfcc.len());
     let silences = silences(
         audio_mfcc.iter().copied(),
         SILENCE_MIN_FRAMES,
@@ -221,12 +222,11 @@ pub fn find_start(audio_mfcc: &[[f32; 13]], synth_mfcc: &[[f32; 13]]) -> usize {
         return 0;
     };
 
-    let len_ratio = audio_mfcc.len() as f64 / synth_mfcc.len() as f64;
     let max_start_detection_audio_frames =
-        (1.3 * len_ratio * start_detection_synth_frames as f64) as usize;
+        (1.2 * start_detection_synth_frames as f64) as usize;
     let max_start_detection_audio_frames =
         max_start_detection_audio_frames.min(audio_mfcc.len() - last);
-    let min_start_detection_audio_frames = (0.8 * max_start_detection_audio_frames as f64) as usize;
+    let min_start_detection_audio_frames = max_start_detection_audio_frames - (0.2 * start_detection_synth_frames as f64) as usize;
     let psi = max_start_detection_audio_frames - min_start_detection_audio_frames;
 
     let synth_frames = &synth_mfcc[0..start_detection_synth_frames];
