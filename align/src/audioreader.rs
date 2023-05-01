@@ -107,8 +107,13 @@ impl FrameSupplier for StreamingFrameSupplier {
 
     fn fill_next(&mut self, output: &mut [f32]) -> usize {
         if self.idx >= self.resampled_frame.samples() {
-            if self.fill_internal_buf().unwrap().unwrap_or(0) == 0 {
-                return 0;
+            loop {
+                let Some(filled) = self.fill_internal_buf().unwrap() else {
+                    return 0;
+                };
+                if filled > 0 {
+                    break;
+                }
             }
             self.idx = 0;
         }
