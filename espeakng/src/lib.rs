@@ -2,6 +2,7 @@
 
 use core::slice;
 
+use std::ptr;
 use std::sync::{Arc, Condvar, Mutex, Once};
 use std::{
     cell::Cell,
@@ -150,21 +151,16 @@ unsafe extern "C" fn callback(
     numsamples: c_int,
     events: *mut espeak_EVENT,
 ) -> c_int {
-    let output: *mut SynthData = (*events).user_data.cast();
+    let output: *mut Fragment = (*events).user_data.cast();
     let wave_slice = slice::from_raw_parts(wave, numsamples as usize);
-    (*output).fragment.data.extend_from_slice(wave_slice);
+    (*output).data.extend_from_slice(wave_slice);
     let events = EventIter { ptr: events };
     for event in events {
         match event.type_ {
             espeak_EVENT_TYPE_espeakEVENT_END => {
-                (*output).fragment.duration = event.audio_position as usize
+                (*output).duration = event.audio_position as usize
             }
-            espeak_EVENT_TYPE_espeakEVENT_MSG_TERMINATED => {
-                let (c, m) = &*(*output).condvar;
-                let mut g = m.lock().unwrap();
-                *g = true;
-                c.notify_one();
-            }
+            espeak_EVENT_TYPE_espeakEVENT_MSG_TERMINATED => {}
             _ => (),
         }
     }
@@ -186,11 +182,6 @@ where
     }
 }
 
-struct SynthData {
-    fragment: Fragment,
-    condvar: Arc<(Condvar, Mutex<bool>)>,
-}
-
 impl<S, I> Iterator for SpokenIter<S, I>
 where
     I: Iterator<Item = S>,
@@ -204,12 +195,8 @@ where
             return None;
         };
 
-        let condvar = Arc::new((Condvar::new(), Mutex::new(false)));
-        let fragment = Fragment::default();
-        let mut data = SynthData {
-            condvar: condvar.clone(),
-            fragment,
-        };
+        let mut fragment = Fragment::default();
+        let fragment_ptr = &mut fragment as *mut _;
         let language = CString::new("en").unwrap();
         let _voice_properties = espeak_VOICE {
             name: std::ptr::null(),
@@ -222,26 +209,24 @@ where
             score: 0,
             spare: std::ptr::null_mut(),
         };
+        let text = CString::new(utt.as_ref()).unwrap();
+        let text_len = text.as_bytes().len();
         unsafe {
-            let text = CString::new(utt.as_ref()).unwrap();
-            let text_len = text.as_bytes().len();
             // RETRIEVAL
             es_try!(espeak_ng_Synthesize(
                 text.as_ptr() as *const _,
                 text_len as u64,
                 0,
+                espeak_POSITION_TYPE_POS_CHARACTER,
                 0,
                 // We use a rust str, so we always have valid UTF-8
-                espeakCHARS_AUTO,
-                0,
+                espeakCHARS_UTF8,
                 std::ptr::null_mut(),
-                &mut data as *mut _ as *mut _,
+                fragment_ptr as *mut _,
             ))
             .unwrap();
         }
-        let (c, m) = &*condvar;
-        let _guard = c.wait_while(m.lock().unwrap(), |m: &mut bool| !*m).unwrap();
-        Some(data.fragment)
+        Some(fragment)
     }
 }
 
@@ -249,12 +234,13 @@ impl EspeakNg {
     pub fn new() -> Result<Self, Error> {
         let error_context = std::ptr::null_mut();
         ES_INIT.call_once(|| unsafe {
-            espeak_Initialize(
-                espeak_AUDIO_OUTPUT_AUDIO_OUTPUT_RETRIEVAL,
-                500,
-                std::ptr::null(),
-                0,
-            );
+            espeak_ng_InitializePath(ptr::null());
+            es_try! {espeak_ng_Initialize(error_context)}.unwrap();
+            es_try!{
+                espeak_ng_InitializeOutput(espeak_ng_OUTPUT_MODE_ENOUTPUT_MODE_SYNCHRONOUS, 0, ptr::null())
+            }.unwrap();
+            es_try!{espeak_ng_SetVoiceByName(ESPEAKNG_DEFAULT_VOICE.as_ptr() as *const _)}.unwrap();
+            espeak_SetSynthCallback(Some(callback));
         });
         Ok(Self {
             _error_context: error_context,
@@ -275,14 +261,9 @@ impl EspeakNg {
 
     pub fn synthesize_multiple<S: AsRef<str>, I: Iterator<Item = S>>(
         &self,
-        mut voice: Voice,
+        voice: Voice,
         utterances: I,
     ) -> Result<SpokenIter<S, I>, Error> {
-        unsafe {
-            es_try!(espeak_ng_SetVoiceByProperties(&mut voice.0 as *mut _))?;
-            espeak_SetSynthCallback(Some(callback));
-        }
-
         let iter = SpokenIter::new(voice, utterances);
         Ok(iter)
     }
