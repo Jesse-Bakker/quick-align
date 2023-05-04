@@ -2,7 +2,7 @@ mod audioreader;
 mod dtw;
 mod tts;
 
-use std::{iter, thread};
+use std::thread;
 
 use audioreader::AudioReader;
 use mfcc::{mfcc, FrameExtractionOpts, FrameSupplier, MelBanksOpts, MfccOptions};
@@ -15,7 +15,6 @@ const MFCC_WINDOW_LENGTH: f32 = 100. /* milliseconds */;
 const SILENCE_MIN_LENGTH: f32 = 0.6 /* seconds */;
 const SILENCE_MAX_ENERGY: f32 = 0.699; // log10(5)
 const START_DETECTION_MAX_SKIP: f32 = 60. /* seconds */;
-const CMN_WINDOW: f32 = 3000. /* milliseconds */;
 
 #[derive(PartialEq)]
 struct CmpF32(f32);
@@ -96,50 +95,8 @@ pub fn silences(
     }
 }
 
-fn normalize_mfcc(window: usize, mfcc: &[[f32; 13]]) -> Vec<[f32; 13]> {
-    let n_frames = mfcc.len();
-    let mut last_window = None;
-    let mut cur_sum = [0.; 13];
-
-    let mut out = Vec::with_capacity(mfcc.len());
-    for t in 0..n_frames {
-        let (window_start, window_end) = if t < (window / 2) {
-            (0, window.min(n_frames))
-        } else {
-            let end = (t + (window / 2)).min(n_frames);
-            (end.saturating_sub(window), end)
-        };
-        if let Some((last_window_start, last_window_end)) = last_window {
-            if window_start > last_window_start {
-                for (s, v) in iter::zip(cur_sum.iter_mut(), mfcc[last_window_start].iter()) {
-                    *s -= v;
-                }
-            }
-            if window_end > last_window_end {
-                for (s, v) in iter::zip(cur_sum.iter_mut(), mfcc[last_window_end].iter()) {
-                    *s += v;
-                }
-            }
-        } else {
-            for row in &mfcc[window_start..window_end] {
-                for (s, v) in iter::zip(cur_sum.iter_mut(), row.iter()) {
-                    *s += v;
-                }
-            }
-        }
-        last_window = Some((window_start, window_end));
-        let window_frames = window_end - window_start;
-        let mut out_frame = mfcc[t];
-        for (v, s) in iter::zip(out_frame.iter_mut(), cur_sum) {
-            *v -= s / window_frames as f32;
-        }
-        out.push(out_frame);
-    }
-    out
-}
-
 fn compute_mfcc<T: FrameSupplier>(wave: &mut T, frame_opts: FrameExtractionOpts) -> Vec<[f32; 13]> {
-    let m: Vec<_> = mfcc(
+    mfcc(
         MfccOptions {
             mel_opts: MelBanksOpts {
                 n_bins: 40,
@@ -151,9 +108,7 @@ fn compute_mfcc<T: FrameSupplier>(wave: &mut T, frame_opts: FrameExtractionOpts)
         },
         wave,
     )
-    .collect();
-    //normalize_mfcc(300, &m)
-    m
+    .collect()
 }
 
 fn search_sorted_right(a: Vec<usize>, v: impl ExactSizeIterator<Item = usize>) -> Vec<usize> {
@@ -186,28 +141,12 @@ fn find_boundaries(
     begin_indices.into_iter().map(|i| real_indices[i]).collect()
 }
 
-macro_rules! time {
-    ($s:expr, $m:expr) => {{
-        #[cfg(timing)]
-        {
-            let instant = std::time::Instant::now();
-            let result = $s;
-            eprintln!("{}: {}", $m, instant.elapsed().as_millis());
-            result
-        }
-        #[cfg(not(timing))]
-        {
-            $s
-        }
-    }};
-}
-
 pub fn find_start(audio_mfcc: &[[f32; 13]], synth_mfcc: &[[f32; 13]]) -> usize {
     const SILENCE_MIN_FRAMES: usize = (SILENCE_MIN_LENGTH / (MFCC_WINDOW_SHIFT / 1000.)) as usize;
     const START_DETECTION_MAX_SKIP_FRAMES: usize =
         (START_DETECTION_MAX_SKIP / (MFCC_WINDOW_SHIFT / 1000.)) as usize;
     let start_detection_synth_frames: usize =
-        (3 * START_DETECTION_MAX_SKIP_FRAMES).min(synth_mfcc.len());
+        (1 * START_DETECTION_MAX_SKIP_FRAMES).min(synth_mfcc.len());
     let silences = silences(
         audio_mfcc.iter().copied(),
         SILENCE_MIN_FRAMES,
@@ -222,11 +161,11 @@ pub fn find_start(audio_mfcc: &[[f32; 13]], synth_mfcc: &[[f32; 13]]) -> usize {
         return 0;
     };
 
-    let max_start_detection_audio_frames =
-        (1.2 * start_detection_synth_frames as f64) as usize;
+    let max_start_detection_audio_frames = (1.2 * start_detection_synth_frames as f64) as usize;
     let max_start_detection_audio_frames =
         max_start_detection_audio_frames.min(audio_mfcc.len() - last);
-    let min_start_detection_audio_frames = max_start_detection_audio_frames - (0.2 * start_detection_synth_frames as f64) as usize;
+    let min_start_detection_audio_frames =
+        max_start_detection_audio_frames - (0.2 * start_detection_synth_frames as f64) as usize;
     let psi = max_start_detection_audio_frames - min_start_detection_audio_frames;
 
     let synth_frames = &synth_mfcc[0..start_detection_synth_frames];
@@ -234,7 +173,7 @@ pub fn find_start(audio_mfcc: &[[f32; 13]], synth_mfcc: &[[f32; 13]]) -> usize {
     let candidate_samples = candidates
         .iter()
         .map(|&start| &audio_mfcc[start..(start + max_start_detection_audio_frames)]);
-    let (start, _cost) = find_subsequence(synth_frames, candidate_samples, psi);
+    let (start, _cost) = find_subsequence(synth_frames, candidate_samples, Some(psi), None);
     candidates[start]
 }
 
@@ -248,20 +187,15 @@ pub fn align(audio_file: &str, text_fragments: &[String]) -> Vec<f32> {
     let (audio_mfcc, synth_mfcc, anchors) = thread::scope(|s| {
         let t_audio = s.spawn(|| {
             let reader = AudioReader::new();
-            let mut audio_samples = time!(
-                reader
-                    .read_and_transcode_file(audio_file, frame_opts)
-                    .unwrap(),
-                "Read and transcode audio"
-            );
-            time!(compute_mfcc(&mut audio_samples, frame_opts), "Audio mfcc")
+            let mut audio_samples = reader
+                .read_and_transcode_file(audio_file, frame_opts)
+                .unwrap();
+
+            compute_mfcc(&mut audio_samples, frame_opts)
         });
 
         let t_synth = s.spawn(|| {
-            let mut synth_samples = time!(
-                tts::speak_multiple(text_fragments.into()).unwrap(),
-                "Synthesize audio"
-            );
+            let mut synth_samples = tts::speak_multiple(text_fragments.into()).unwrap();
 
             let mfcc = compute_mfcc(&mut synth_samples, frame_opts);
             let anchors = synth_samples.anchors();

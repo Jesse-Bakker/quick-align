@@ -18,4 +18,3 @@ impl Window {
         self.window[x] = (left.min(y), right.max(y + 1).min(self.len_y));
     }
 }
-

@@ -31,7 +31,6 @@ impl SparseCostMatrix {
     fn size(&self) -> (usize, usize) {
         self.size
     }
-
 }
 
 impl Index<(usize, usize)> for SparseCostMatrix {
@@ -96,10 +95,12 @@ where
 pub(crate) fn find_subsequence<'a>(
     needle: &[[f32; 13]],
     haystack: impl Iterator<Item = &'a [[f32; 13]]>,
-    psi: usize,
+    psi: Option<usize>,
+    radius: Option<usize>,
 ) -> (usize, f32) {
-    //let radius: usize = needle.len() / 2;
-    let radius: usize = (3 * psi) / 2;
+    let psi = psi.unwrap_or(0);
+    // Radius has to at least cover the psi
+    let radius = radius.unwrap_or(3 * psi / 2).max(100);
     // Calculate bound using only guaranteed part of needle
     haystack
         .scan(f32::INFINITY, |ub, series| {
@@ -120,13 +121,7 @@ pub(crate) struct Psi {
     pub(crate) b_end: usize,
 }
 
-pub(crate) fn cost_eapruned<T>(
-    mfcc1: &[T],
-    mfcc2: &[T],
-    bsf: f32,
-    psi: usize,
-    radius: usize,
-) -> f32
+pub(crate) fn cost_eapruned<T>(mfcc1: &[T], mfcc2: &[T], bsf: f32, psi: usize, radius: usize) -> f32
 where
     T: Sample,
 {
@@ -238,7 +233,8 @@ where
     costs[costs.len() - psi..]
         .iter()
         .copied()
-        .min_by_key(|cost| CmpF32::from(*cost)).unwrap()
+        .min_by_key(|cost| CmpF32::from(*cost))
+        .unwrap()
 }
 
 pub(crate) fn cost_matrix<T>(
