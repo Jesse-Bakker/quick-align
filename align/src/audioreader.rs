@@ -1,5 +1,7 @@
+use std::path::Path;
 use std::slice;
 
+use crate::mfcc::FrameSupplier;
 use ffmpeg::format::context::Input;
 use ffmpeg::format::sample::Type;
 use ffmpeg::format::Sample;
@@ -8,7 +10,6 @@ use ffmpeg::software::resampling::Context;
 use ffmpeg::{media, ChannelLayout, Packet};
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::format;
-use mfcc::{FrameExtractionOpts, FrameSupplier};
 use std::sync::Once;
 
 static FFMPEG_INITIALIZED: Once = Once::new();
@@ -142,8 +143,8 @@ impl AudioReader {
 
     pub(crate) fn read_and_transcode_file(
         &self,
-        filename: &str,
-        frame_opts: FrameExtractionOpts,
+        filename: impl AsRef<Path>,
+        sample_freq: u32,
     ) -> Result<StreamingFrameSupplier, ffmpeg::Error> {
         let ictx = format::input(&filename)?;
         let input = ictx
@@ -164,9 +165,8 @@ impl AudioReader {
             } else {
                 let duration = input.duration();
                 let time_base = input.time_base();
-                let frames =
-                    (duration * frame_opts.sample_freq as i64 * time_base.numerator() as i64)
-                        / (time_base.denominator() as i64);
+                let frames = (duration * sample_freq as i64 * time_base.numerator() as i64)
+                    / (time_base.denominator() as i64);
                 frames as usize
             }
         };
@@ -176,7 +176,7 @@ impl AudioReader {
             (
                 Sample::F32(Type::Planar), // packed or planar does not matter, as we're going mono
                 ChannelLayout::MONO,
-                frame_opts.sample_freq,
+                sample_freq,
             ),
         )?;
 

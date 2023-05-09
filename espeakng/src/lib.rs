@@ -3,7 +3,7 @@
 use core::slice;
 
 use std::ptr;
-use std::sync::{Arc, Condvar, Mutex, Once};
+use std::sync::Once;
 use std::{
     cell::Cell,
     ffi::{c_int, c_short, CStr, CString},
@@ -168,7 +168,7 @@ unsafe extern "C" fn callback(
 }
 
 pub struct SpokenIter<S: AsRef<str>, I: Iterator<Item = S>> {
-    voice: Voice,
+    _voice: Voice,
     utterances: I,
 }
 
@@ -178,7 +178,7 @@ where
     I: Iterator<Item = S>,
 {
     fn new(voice: Voice, utterances: I) -> Self {
-        Self { voice, utterances }
+        Self { _voice: voice, utterances }
     }
 }
 

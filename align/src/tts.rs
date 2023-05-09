@@ -1,5 +1,5 @@
 use espeakng::*;
-use mfcc::FrameSupplier;
+use crate::mfcc::FrameSupplier;
 
 pub(crate) struct StreamingFrameSupplier<I>
 where
@@ -25,8 +25,8 @@ where
             duration: 0,
         }
     }
-    pub(crate) fn anchors(&self) -> Vec<usize> {
-        self.anchors.clone()
+    pub(crate) fn anchors(&self) -> &[usize] {
+        &self.anchors
     }
 }
 
@@ -68,14 +68,13 @@ pub(crate) struct Spoken {
 }
 
 /// Perform Text-To-Speech
-pub(crate) fn speak_multiple(
-    utterances: Vec<String>,
-) -> Result<StreamingFrameSupplier<impl Iterator<Item = Fragment>>, ()> {
-    let es = EspeakNg::new().map_err(|_| ())?;
+pub(crate) fn speak_multiple<S: AsRef<str>>(
+    utterances: impl Iterator<Item = S>,
+) -> Result<StreamingFrameSupplier<impl Iterator<Item = Fragment>>, espeakng::Error> {
+    let es = EspeakNg::new()?;
     let _sample_rate = es.sample_rate();
     let spoken = es
-        .synthesize_multiple(Voice::default(), utterances.into_iter())
-        .map_err(|_| ())?;
+        .synthesize_multiple(Voice::default(), utterances.into_iter())?;
     let s = StreamingFrameSupplier::new(spoken);
     Ok(s)
 }

@@ -1,31 +1,23 @@
 use core::slice;
-use freq::Freq;
+use crate::freq::{Freq, MelFreq};
 use ndarray::linalg::general_mat_vec_mul;
 use ndarray::prelude::*;
 use realfft::num_complex::Complex;
 use realfft::RealFftPlanner;
 
-pub trait Feature {
-    fn frame_options(&self) -> &FrameExtractionOpts;
-    fn compute(&mut self, signal_frame: ArrayViewMut1<Float>, feature: ArrayViewMut1<Float>);
-    fn n_coeffs(&self) -> usize;
-}
-
 type Float = f32;
 const PI: Float = std::f32::consts::PI;
 const TWOPI: Float = std::f32::consts::TAU;
 
-pub mod freq;
-
 struct MelBanks {
-    _center_freqs: Vec<freq::Freq>,
+    _center_freqs: Vec<Freq>,
     bins: Vec<(usize, Array1<Float>)>,
 }
 
 pub struct MelBanksOpts {
     pub n_bins: usize,
-    pub low_freq: Option<freq::Freq>,
-    pub high_freq: Option<freq::Freq>,
+    pub low_freq: Option<Freq>,
+    pub high_freq: Option<Freq>,
 }
 
 #[derive(Clone, Copy)]
@@ -67,8 +59,8 @@ impl MelBanks {
 
         let fft_bin_width = sample_freq / win_size as Float;
 
-        let mel_low_freq: freq::MelFreq = low_freq.unwrap_or(0.0.into()).to_mel();
-        let mel_high_freq: freq::MelFreq = high_freq.unwrap_or(nyquist).to_mel();
+        let mel_low_freq: MelFreq = low_freq.unwrap_or(0.0.into()).to_mel();
+        let mel_high_freq: MelFreq = high_freq.unwrap_or(nyquist).to_mel();
 
         let mel_freq_delta = (mel_high_freq - mel_low_freq) / (n_bins + 1) as Float;
 
@@ -84,8 +76,8 @@ impl MelBanks {
 
                 let this_bin: Array1<_> = (0..n_fft_bins)
                     .filter_map(|i| {
-                        let freq: freq::Freq = fft_bin_width * (i as Float);
-                        let mel: freq::MelFreq = freq.to_mel();
+                        let freq: Freq = fft_bin_width * (i as Float);
+                        let mel: MelFreq = freq.to_mel();
 
                         if mel < left_mel || mel > right_mel {
                             return None;
@@ -131,6 +123,40 @@ pub struct Mfcc {
 }
 
 impl Mfcc {
+    fn compute(&mut self, mut frame: ArrayViewMut1<Float>, mut feature: ArrayViewMut1<Float>) {
+        // XXX: use raw spectral power, before windowing and pre-emphasis, as C0
+        let mel_banks = &self.mel_banks;
+
+        let fft = self
+            .fft_planner
+            .plan_fft_forward(self.options.frame_opts.win_size_padded());
+        fft.process_with_scratch(
+            frame.as_slice_mut().unwrap(),
+            self.fft_out.as_mut_slice(),
+            self.fft_scratch.as_mut_slice(),
+        )
+        .unwrap();
+
+        let spectrum = &mut self.fft_out;
+        let power_spectrum = ArrayViewMut::from(Mfcc::compute_power_spectrum(spectrum));
+
+        mel_banks.apply_in(power_spectrum.view(), self.mel_energies.view_mut());
+        for energy in self.mel_energies.iter_mut() {
+            if *energy == 0.0 {
+                *energy = f32::EPSILON;
+            }
+            *energy = energy.ln();
+        }
+
+        general_mat_vec_mul(1.0, &self.dct_matrix, &self.mel_energies, 0.0, &mut feature)
+
+        // XXX: Do cepstral liftering
+    }
+
+    fn frame_options(&self) -> &FrameExtractionOpts {
+        &self.options.frame_opts
+    }
+
     fn dct_matrix(rows: usize, cols: usize) -> Array2<Float> {
         let mut matrix = Array2::zeros((rows, cols));
 
@@ -184,46 +210,6 @@ impl Mfcc {
             }
             &mut output[0..dim]
         }
-    }
-}
-
-impl Feature for Mfcc {
-    fn compute(&mut self, mut frame: ArrayViewMut1<Float>, mut feature: ArrayViewMut1<Float>) {
-        // XXX: use raw spectral power, before windowing and pre-emphasis, as C0
-        let mel_banks = &self.mel_banks;
-
-        let fft = self
-            .fft_planner
-            .plan_fft_forward(self.options.frame_opts.win_size_padded());
-        fft.process_with_scratch(
-            frame.as_slice_mut().unwrap(),
-            self.fft_out.as_mut_slice(),
-            self.fft_scratch.as_mut_slice(),
-        )
-        .unwrap();
-
-        let spectrum = &mut self.fft_out;
-        let power_spectrum = ArrayViewMut::from(Mfcc::compute_power_spectrum(spectrum));
-
-        mel_banks.apply_in(power_spectrum.view(), self.mel_energies.view_mut());
-        for energy in self.mel_energies.iter_mut() {
-            if *energy == 0.0 {
-                *energy = f32::EPSILON;
-            }
-            *energy = energy.ln();
-        }
-
-        general_mat_vec_mul(1.0, &self.dct_matrix, &self.mel_energies, 0.0, &mut feature)
-
-        // XXX: Do cepstral liftering
-    }
-
-    fn frame_options(&self) -> &FrameExtractionOpts {
-        &self.options.frame_opts
-    }
-
-    fn n_coeffs(&self) -> usize {
-        self.options.n_ceps
     }
 }
 
@@ -330,7 +316,7 @@ impl<'a, T: FrameSupplier> MfccIter<'a, T> {
         let window = hamming_window(feature.frame_options().win_size_padded());
         Self {
             feature,
-            window, 
+            window,
             frame_extractor,
             keep_going: true,
         }
@@ -364,3 +350,4 @@ where
         Some(out)
     }
 }
+

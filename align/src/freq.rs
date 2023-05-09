@@ -1,28 +1,27 @@
-use super::Float;
 use core::slice;
 use std::ops;
 
 macro_rules! impl_float_ops {
     ($t:ty) => {
-        impl ops::Mul<Float> for $t {
+        impl ops::Mul<f32> for $t {
             type Output = $t;
 
-            fn mul(self, rhs: Float) -> Self::Output {
+            fn mul(self, rhs: f32) -> Self::Output {
                 Self(self.0 * rhs)
             }
         }
 
-        impl ops::Mul<$t> for Float {
+        impl ops::Mul<$t> for f32 {
             type Output = $t;
 
             fn mul(self, rhs: $t) -> Self::Output {
                 <$t>::from(self * rhs.0)
             }
         }
-        impl ops::Div<Float> for $t {
+        impl ops::Div<f32> for $t {
             type Output = $t;
 
-            fn div(self, rhs: Float) -> Self::Output {
+            fn div(self, rhs: f32) -> Self::Output {
                 Self(self.0 / rhs)
             }
         }
@@ -42,31 +41,31 @@ macro_rules! impl_float_ops {
             }
         }
 
-        impl From<$t> for Float {
-            fn from(t: $t) -> Float {
+        impl From<$t> for f32 {
+            fn from(t: $t) -> f32 {
                 t.0
             }
         }
 
-        impl From<Float> for $t {
-            fn from(f: Float) -> Self {
+        impl From<f32> for $t {
+            fn from(f: f32) -> Self {
                 Self(f)
             }
         }
 
-        impl From<&$t> for Float {
-            fn from(t: &$t) -> Float {
+        impl From<&$t> for f32 {
+            fn from(t: &$t) -> f32 {
                 t.0
             }
         }
 
-        impl From<&Float> for $t {
-            fn from(f: &Float) -> Self {
+        impl From<&f32> for $t {
+            fn from(f: &f32) -> Self {
                 Self(*f)
             }
         }
-        impl AsFloatSlice for [$t] {
-            fn as_float_slice(&self) -> &[Float] {
+        impl Asf32Slice for [$t] {
+            fn as_float_slice(&self) -> &[f32] {
                 let ptr = self.as_ptr();
                 let len = self.len();
                 unsafe { slice::from_raw_parts(ptr.cast(), len) }
@@ -77,14 +76,14 @@ macro_rules! impl_float_ops {
 
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
-pub struct Freq(Float);
+pub struct Freq(f32);
 
 #[repr(transparent)]
 #[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
-pub(crate) struct MelFreq(Float);
+pub(crate) struct MelFreq(f32);
 
-pub(crate) trait AsFloatSlice {
-    fn as_float_slice(&self) -> &[Float];
+pub(crate) trait Asf32Slice {
+    fn as_float_slice(&self) -> &[f32];
 }
 
 impl_float_ops!(Freq);
