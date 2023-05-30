@@ -3,8 +3,10 @@ name = "espeakng"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+clang-runtime = ["espeakng-sys/clang-runtime"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-espeakng-sys = "0.1.2"
-once_cell = "1.17.1"
+espeakng-sys = { git = "https://github.com/Better-Player/espeakng-sys", rev = "2b686c7e418f6cec81b2ac0c29412d6af90178f8" }

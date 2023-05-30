@@ -1,4 +1,4 @@
-use align::{AudioDuration, FeatBuf, FeatureOptions};
+use quick_align::{AudioDuration, FeatBuf, FeatureOptions};
 use clap::Parser;
 
 use std::{io::Read, path::Path, thread, time::Duration};

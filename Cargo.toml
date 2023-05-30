@@ -6,10 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-once_cell = "1.13.0"
-ndarray= { version ="0.15.4", features = ["approx"] }
-lazy_static = "1.4.0"
 clap = { version="3.2.17", features = ["derive"] }
-ffmpeg-next = "5.1.1"
-espeakng = { version = "0.1.0", path = "./espeakng" }
+espeakng = { version = "0.1.0", path = "./espeakng", features = ["clang-runtime"] }
+ffmpeg-next = "6"
+lazy_static = "1.4.0"
+ndarray= { version ="0.15.4", features = ["approx"] }
+once_cell = "1.13.0"
 realfft = { version = "3.2.0" }
